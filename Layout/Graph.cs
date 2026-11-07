@@ -103,12 +103,17 @@ namespace HopperFormat.Layout
                 }
             }
             var remaining = nodes.ToDictionary(n => n.Id, n => g.In[n.Id].Count);
-            while (g.Topological.Count < nodes.Length)
+            var indices = nodes.Select((node, index) => new { node.Id, Index = index })
+                .ToDictionary(item => item.Id, item => item.Index);
+            var ready = new SortedSet<int>(Enumerable.Range(0, nodes.Length).Where(i => remaining[nodes[i].Id] == 0));
+            while (ready.Count > 0)
             {
-                var next = nodes.First(n => remaining[n.Id] == 0);
-                remaining[next.Id] = -1;
+                int index = ready.Min;
+                ready.Remove(index);
+                var next = nodes[index];
                 g.Topological.Add(next);
-                foreach (var edge in g.Out[next.Id]) remaining[edge.To]--;
+                foreach (var edge in g.Out[next.Id])
+                    if (--remaining[edge.To] == 0) ready.Add(indices[edge.To]);
             }
             graph = g;
             return true;

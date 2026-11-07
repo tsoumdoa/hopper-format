@@ -13,6 +13,7 @@ namespace HopperFormat
         private readonly Font _font;
         private readonly Action<string, Action> _guard;
         private string _text;
+        private bool _disabled;
 
         internal FeedbackPill(GH_Canvas canvas, Action<string, Action> guard)
         {
@@ -26,6 +27,7 @@ namespace HopperFormat
 
         internal void Show(string text)
         {
+            if (_disabled) return;
             _text = text;
             _timer.Stop();
             _timer.Start();
@@ -34,6 +36,7 @@ namespace HopperFormat
 
         internal void Hide()
         {
+            if (_disabled) return;
             _timer.Stop();
             _text = null;
             _canvas.Invalidate();
@@ -71,6 +74,14 @@ namespace HopperFormat
             }
             finally { g.Restore(state); }
         });
+
+        internal void Disable()
+        {
+            _disabled = true;
+            _text = null;
+            _timer.Stop();
+            _canvas.CanvasPostPaintOverlay -= Paint;
+        }
 
         public void Dispose()
         {

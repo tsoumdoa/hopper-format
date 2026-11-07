@@ -6,16 +6,6 @@ namespace HopperFormat.Layout
 {
     internal static class Ranking
     {
-        internal static bool TryRank(Snapshot snapshot, out Dictionary<Guid, int> ranks,
-            out string diagnostic)
-        {
-            Graph graph;
-            ranks = new Dictionary<Guid, int>();
-            if (!Graph.TryCreate(snapshot, out graph, out diagnostic)) return false;
-            Assign(graph, out ranks);
-            return true;
-        }
-
         internal static List<List<Node>> Assign(Graph graph, out Dictionary<Guid, int> ranks, bool recoverColumns = false)
         {
             var assigned = new Dictionary<Guid, int>();

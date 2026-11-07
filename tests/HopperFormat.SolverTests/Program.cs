@@ -658,6 +658,38 @@ internal static class Program
 
     private static void ValidationTests()
     {
+        Check("Compaction constraint cycle returns a clean failure with zero moves", () => {
+            var a = Component(1, "A", 0, 100); var b = Component(2, "B", 0, 0);
+            var snapshot = Make(new[] { a, b }, Wire(a, b));
+            var result = LayoutSolver.Solve(snapshot, (graph, ordering, ranks, x, lanes) => {
+                var upper = new OrderItem { Node = a }; var lower = new OrderItem { Node = b };
+                var upperLane = new OrderItem { Node = a, Virtual = true };
+                var lowerLane = new OrderItem { Node = b, Virtual = true };
+                var columns = new[] { new List<OrderItem> { upper, lower }, new List<OrderItem> { lowerLane, upperLane } };
+                // Opposite column orders impose both A < B and B < A.
+                return Placement.Compact(graph, columns,
+                    new Dictionary<OrderItem, OrderItem> { [upper] = upper, [lower] = lower,
+                        [upperLane] = upper, [lowerLane] = lower },
+                    new Dictionary<OrderItem, double> { [upper] = 0, [lower] = 0, [upperLane] = 0, [lowerLane] = 0 }, x);
+            });
+            Assert(!result.Success && result.Moves.Count == 0 && result.Tops.Count == 0
+                && result.Diagnostic.Contains("compaction") && result.Diagnostic.Contains("cycle"), result.Diagnostic);
+        });
+        Check("Invalid rounded graph rebuild returns a clean failure with zero moves", () => {
+            var a = Component(1, "A", 0, 100); var b = Component(2, "B", 0, 0);
+            var result = LayoutSolver.Solve(Make(new[] { a, b }, Wire(a, b)),
+                (graph, ordering, ranks, x, lanes) => graph.Nodes.ToDictionary(n => n.Id,
+                    n => new Vec2(double.PositiveInfinity, 0)));
+            Assert(!result.Success && result.Moves.Count == 0 && result.Tops.Count == 0
+                && result.Diagnostic.Contains("Rounded layout is invalid") && result.Diagnostic.Contains("coordinates"), result.Diagnostic);
+        });
+        Check("Topological queue chooses the lowest sorted ready index including newly ready nodes", () => {
+            var a = Component(1, "A", 0, 0); var b = Component(2, "B", 0, 100);
+            var c = Component(3, "C", 0, 200); var d = Component(4, "D", 0, 300);
+            Assert(Graph.TryCreate(Make(new[] { d, c, b, a }, Wire(c, a), Wire(c, a), Wire(a, d)),
+                out var graph, out var diagnostic), diagnostic);
+            Assert(graph.Topological.Select(n => n.Id).SequenceEqual(new[] { b.Id, c.Id, a.Id, d.Id }), "ready order changed");
+        });
         Check("Cycle refusal names the labels on an offending edge", () => {
             var a = Component(1, "Circle", 0, 0); var b = Component(2, "Move", 100, 0);
             var snapshot = Make(new[] { a, b }, Wire(a, b), Wire(b, a));

@@ -6,6 +6,7 @@ namespace HopperFormat
 {
     public sealed class HopperFormatInfo : GH_AssemblyInfo
     {
+        private static readonly Lazy<Bitmap> CachedIcon = new Lazy<Bitmap>(DecodeIcon);
         public override string Name => "HopperFormat";
         public override Bitmap Icon => LoadIcon();
         public override Guid Id => new Guid("67cb28c8-cf29-4b6c-9c1c-030b7687e4c7");
@@ -14,7 +15,9 @@ namespace HopperFormat
         public override string AuthorContact => string.Empty;
         public override string AssemblyVersion => GetType().Assembly.GetName().Version.ToString();
 
-        internal static Bitmap LoadIcon()
+        internal static Bitmap LoadIcon() => CachedIcon.Value;
+
+        private static Bitmap DecodeIcon()
         {
             using (var stream = typeof(HopperFormatInfo).Assembly.GetManifestResourceStream("HopperFormat.icon.png"))
             {

@@ -161,16 +161,13 @@ namespace HopperFormat
                     // neither arm duplicate operations nor keep a stale first tap.
                     foreach (var registration in _registrations.ToArray())
                         if (registration != owner) registration.Reset();
-                    if (key == owner.Key)
-                    {
-                        // WM_CHAR can arrive after a different queued keydown or
-                        // keyup. Match physical scan codes instead of the literal
-                        // letter so alternate keyboard layouts are covered too.
-                        var scan = (int)((message.LParam.ToInt64() >> 16) & 0xff);
-                        var count = Math.Max(1, (int)(message.LParam.ToInt64() & 0xffff));
-                        _pendingCharacters.TryGetValue(scan, out var pending);
-                        _pendingCharacters[scan] = (int)Math.Min(int.MaxValue, (long)pending + count);
-                    }
+                    // WM_CHAR can arrive after a different queued keydown or
+                    // keyup. Match physical scan codes instead of the literal
+                    // letter so alternate keyboard layouts are covered too.
+                    var scan = (int)((message.LParam.ToInt64() >> 16) & 0xff);
+                    var count = Math.Max(1, (int)(message.LParam.ToInt64() & 0xffff));
+                    _pendingCharacters.TryGetValue(scan, out var pending);
+                    _pendingCharacters[scan] = (int)Math.Min(int.MaxValue, (long)pending + count);
                     // Bit 30 identifies physical auto-repeat even after focus or
                     // mouse changes have reset the manager's tap state.
                     var repeated = (message.LParam.ToInt64() & (1L << 30)) != 0;

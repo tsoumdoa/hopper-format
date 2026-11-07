@@ -8,10 +8,17 @@ namespace HopperFormat.Layout
     {
         internal static bool TryMatch(Graph graph, Vec2 anchor, out Dictionary<Guid, int> ranks)
         {
-            var islands = Ranking.Assign(graph, out ranks);
+            return TryMatch(graph, anchor, out ranks, out _, out _);
+        }
+
+        internal static bool TryMatch(Graph graph, Vec2 anchor, out Dictionary<Guid, int> ranks,
+            out List<List<Node>> islands, out Dictionary<Guid, int> assignedRanks)
+        {
+            islands = Ranking.Assign(graph, out assignedRanks);
+            ranks = assignedRanks;
             if (Matches(graph, islands, ranks, anchor)) return true;
-            islands = Ranking.Assign(graph, out ranks, true);
-            return Matches(graph, islands, ranks, anchor);
+            var recoveredIslands = Ranking.Assign(graph, out ranks, true);
+            return Matches(graph, recoveredIslands, ranks, anchor);
         }
 
         // Recover only visible rigid structure. Bent long wires leave no virtual

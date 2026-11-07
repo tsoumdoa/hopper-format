@@ -6,7 +6,10 @@ namespace HopperFormat.Layout
 {
     public static class LayoutSolver
     {
-        public static Result Solve(Snapshot snapshot)
+        public static Result Solve(Snapshot snapshot) => Solve(snapshot, Placement.Place);
+
+        internal static Result Solve(Snapshot snapshot,
+            Func<Graph, Ordering, Dictionary<Guid, int>, double, ISet<Edge>, Dictionary<Guid, Vec2>> place)
         {
             Graph original;
             string diagnostic;
@@ -18,29 +21,24 @@ namespace HopperFormat.Layout
             var log = new List<string>();
             var graph = original;
             Dictionary<Guid, Vec2> tops = new Dictionary<Guid, Vec2>();
+            var matched = FixedPoint.TryMatch(graph, anchor, out var fixedRanks, out var islands, out var ranks);
             for (int round = 1; round <= 3; round++)
             {
                 // Rounding may move the union by a fraction of a unit. A feedback
                 // snapshot must use its own union, just as the next public Solve does.
                 var roundAnchor = graph.Nodes.Length == 0 ? anchor : new Vec2(
                     graph.Nodes.Min(n => n.CurrentTop.X), graph.Nodes.Min(n => n.CurrentTop.Y));
-                Dictionary<Guid, int> ranks;
-                var islands = Ranking.Assign(graph, out ranks);
-                Dictionary<Guid, int> fixedRanks;
-                if (FixedPoint.TryMatch(graph, roundAnchor, out fixedRanks))
+                if (round == 1 && matched)
                 {
                     tops = graph.Nodes.ToDictionary(n => n.Id, n => n.CurrentTop);
                     result.Ranks = fixedRanks;
                     result.Rounds = round;
-                    if (round == 1)
-                    {
-                        var visibleLanes = new HashSet<Edge>(islands.SelectMany(island =>
-                            FixedPoint.VisibleLanes(graph, island, fixedRanks)));
-                        result.LaneEdges = graph.Edges.Where(visibleLanes.Contains).ToArray();
-                        int crossings = graph.Edges.Length == 0 ? 0 : islands.Sum(island =>
-                            new Ordering(graph, island, fixedRanks, false).Before);
-                        result.CrossingsBefore = result.CrossingsAfter = crossings;
-                    }
+                    var visibleLanes = new HashSet<Edge>(islands.SelectMany(island =>
+                        FixedPoint.VisibleLanes(graph, island, fixedRanks)));
+                    result.LaneEdges = graph.Edges.Where(visibleLanes.Contains).ToArray();
+                    int crossings = graph.Edges.Length == 0 ? 0 : islands.Sum(island =>
+                        new Ordering(graph, island, fixedRanks, false).Before);
+                    result.CrossingsBefore = result.CrossingsAfter = crossings;
                     log.Add("Round " + round + ": crossings " + result.CrossingsBefore + " -> " +
                         result.CrossingsAfter + "; rounded column layout is a fixed point.");
                     break;
@@ -63,7 +61,9 @@ namespace HopperFormat.Layout
                     foreach (var island in islands)
                     {
                         var ordering = new Ordering(graph, island, ranks);
-                        var placed = Placement.Place(graph, ordering, ranks, roundAnchor.X, lanes);
+                        var placed = place(graph, ordering, ranks, roundAnchor.X, lanes);
+                        if (placed == null)
+                            return new Result { Success = false, Diagnostic = "Layout compaction failed: constraint cycle." };
                         before += ordering.Before;
                         after += ordering.After;
                         double minY = island.Min(n => placed[n.Id].Y);
@@ -91,10 +91,11 @@ namespace HopperFormat.Layout
                 result.LaneEdges = graph.Edges.Where(lanes.Contains).ToArray();
                 log.Add("Round " + round + ": crossings " + before + " -> " + after + ".");
                 if (graph.Nodes.All(n => Same(n.CurrentTop, tops[n.Id]))) break;
-                Graph.TryCreate(WithTops(snapshot, tops), out graph, out diagnostic);
+                if (!Graph.TryCreate(WithTops(snapshot, tops), out graph, out diagnostic))
+                    return new Result { Success = false, Diagnostic = "Rounded layout is invalid: " + diagnostic };
                 var placedAnchor = graph.Nodes.Length == 0 ? anchor : new Vec2(
                     graph.Nodes.Min(n => n.CurrentTop.X), graph.Nodes.Min(n => n.CurrentTop.Y));
-                if (FixedPoint.TryMatch(graph, placedAnchor, out fixedRanks))
+                if (FixedPoint.TryMatch(graph, placedAnchor, out fixedRanks, out islands, out ranks))
                 {
                     result.Ranks = fixedRanks;
                     log.Add("Verified rounded fixed point.");

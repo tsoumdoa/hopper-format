@@ -93,6 +93,51 @@ internal static class SessionTests
                 && f.First.Attributes.Pivot == f.First.InitialPivot && f.Second.Attributes.Pivot == f.Second.InitialPivot,
                 "invalid options moved objects");
         });
+        Check(form, "Session paint failure logs once and disables pill without further invalidations", f =>
+        {
+            Tap(f.Canvas);
+            using var bitmap = new Bitmap(10, 10);
+            var graphics = Graphics.FromImage(bitmap);
+            graphics.Dispose();
+            var invalidations = f.Canvas.Invalidations;
+            f.Canvas.PaintOverlay(graphics);
+            var refreshes = f.Owner.OutputRefreshes;
+            for (int i = 0; i < 5; i++) f.Canvas.PaintOverlay(graphics);
+            Assert(f.Session.Log(false).Count() == 1 && f.Session.Log(false).Single().StartsWith("Feedback paint:")
+                && f.Canvas.Invalidations == invalidations && f.Owner.OutputRefreshes == refreshes,
+                "paint failure repeated reporting, showing or invalidation");
+            f.Document.FailSelection = true; Tap(f.Canvas); f.Document.FailSelection = false;
+            Assert(f.Canvas.Invalidations == invalidations, "error reporting showed a disabled pill");
+            f.Session.Run();
+            Assert(f.Session.LastMoves > 0 && f.Canvas.Invalidations == invalidations, "menu failed or showed disabled pill");
+            Tap(f.Canvas); Tap(f.Canvas);
+            Assert(f.Session.Status == "Already formatted" && f.Canvas.Invalidations == invalidations,
+                "FF failed or showed disabled pill");
+            using var replacement = new GH_Canvas { Document = f.Document, Size = new Size(300, 200) };
+            form.Controls.Add(replacement); Instances.ChangeCanvas(replacement);
+            Assert(f.PillAttempts == 1, "replacement canvas recreated disabled pill");
+        });
+        Check(form, "Session pill timer failure is never reported through Show", f =>
+        {
+            Tap(f.Canvas);
+            var invalidations = f.Canvas.Invalidations;
+            f.PillGuard("Feedback timer", () => throw new InvalidOperationException("injected timer failure"));
+            f.PillGuard("Feedback timer", () => throw new InvalidOperationException("repeated timer failure"));
+            Assert(f.Session.Log(false).Count() == 1 && f.Canvas.Invalidations == invalidations,
+                "pill-origin error showed the pill or logged again");
+        });
+        Check(form, "Session unsettled result applies moves and always exposes warning in status pill and Log", f =>
+        {
+            f.Unstable = true;
+            f.Session.Run();
+            const string warning = "Unstable: layout did not settle within three rounds.";
+            Assert(f.Session.LastMoves > 0 && f.Document.UndoUtil.Records.Count == 1
+                && f.Session.Status.EndsWith(" (not fully settled, FF again may adjust)")
+                && f.Session.Log(false).Contains(warning) && f.Session.Log(true).Count(line => line == warning) == 1,
+                "unsettled layout was not applied or warning was hidden/duplicated");
+            var text = typeof(FeedbackPill).GetField("_text", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            Assert((string)text.GetValue(f.Pill) == f.Session.Status, "pill omitted unsettled warning");
+        });
         Check(form, "Session Debug adds solver lines while skipped objects remain visible without it", f =>
         {
             var scribble = new TestObject { NickName = "Notes" }; f.Document.Objects.Add(scribble); f.Document.Selection.Add(scribble);
@@ -185,6 +230,9 @@ internal static class SessionTests
         internal readonly TestComponent Second = new TestComponent(1, 0) { InitialPivot = new PointF(30, 250) };
         internal int ForwardedDown;
         internal int PillAttempts;
+        internal FeedbackPill Pill;
+        internal Action<string, Action> PillGuard;
+        internal bool Unstable;
         private readonly Form _form;
         private readonly KeyEventHandler _down;
 
@@ -195,7 +243,17 @@ internal static class SessionTests
             {
                 PillAttempts++;
                 if (failPill) throw new InvalidOperationException("injected pill failure");
-                return new FeedbackPill(canvas, guard);
+                PillGuard = guard;
+                return Pill = new FeedbackPill(canvas, guard);
+            }, snapshot =>
+            {
+                var result = LayoutSolver.Solve(snapshot);
+                if (Unstable)
+                {
+                    result.Unstable = true;
+                    result.Log = result.Log.Concat(new[] { "Unstable: layout did not settle within three rounds." }).ToArray();
+                }
+                return result;
             });
             TestParam.Connect(First.Params.Output[0], Second.Params.Input[0]);
             Document.Objects.AddRange(new[] { First, Second }); Document.Selection.AddRange(new[] { First, Second });

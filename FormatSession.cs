@@ -18,7 +18,9 @@ namespace HopperFormat
         private GH_Canvas _canvas;
         private IDisposable _shortcut;
         private FeedbackPill _pill;
+        private bool _pillDisabled;
         private readonly Func<GH_Canvas, Action<string, Action>, FeedbackPill> _pillFactory;
+        private readonly Func<Snapshot, Result> _solve;
         private bool _trackingCanvas, _running, _keyDown;
         private long? _firstTap;
         private Options _options = new Options();
@@ -29,9 +31,11 @@ namespace HopperFormat
         internal int LastMoves { get; private set; }
         internal IEnumerable<string> Log(bool debug) => debug ? _log.Concat(_detail) : _log;
 
-        internal FormatSession(Func<GH_Canvas, Action<string, Action>, FeedbackPill> pillFactory = null)
+        internal FormatSession(Func<GH_Canvas, Action<string, Action>, FeedbackPill> pillFactory = null,
+            Func<Snapshot, Result> solve = null)
         {
             _pillFactory = pillFactory ?? ((canvas, guard) => new FeedbackPill(canvas, guard));
+            _solve = solve ?? LayoutSolver.Solve;
         }
 
         internal void Configure(HopperFormatComponent owner, GH_Document document, Options options) => Guard("Configure", () =>
@@ -67,7 +71,7 @@ namespace HopperFormat
             _canvas.Disposed += OnCanvasDisposed;
             _shortcut = CanvasShortcutHook.Attach(canvas, Keys.F, CanCaptureShortcut, Dispatch,
                 () => Guard("Shortcut reset", ResetTaps));
-            try { _pill = _pillFactory(canvas, Guard); }
+            try { if (!_pillDisabled) _pill = _pillFactory(canvas, GuardPill); }
             catch (Exception error) { _log.Add($"Feedback pill: {error}"); }
         }
 
@@ -78,7 +82,7 @@ namespace HopperFormat
             finally
             {
                 _shortcut = null;
-                _pill?.Dispose();
+                Guard("Feedback dispose", () => _pill?.Dispose(), true);
                 _pill = null;
                 if (_canvas != null)
                 {
@@ -96,7 +100,7 @@ namespace HopperFormat
         private void OnDocumentChanged(object sender, GH_CanvasDocumentChangedEventArgs e) => Guard("Canvas document changed", () =>
         {
             ResetTaps();
-            _pill?.Hide();
+            GuardPill("Feedback hide", () => _pill?.Hide());
         });
         private void OnReset(object sender, EventArgs e) => Guard("Canvas focus", ResetTaps);
         private void OnMouseReset(object sender, MouseEventArgs e) => Guard("Canvas mouse", ResetTaps);
@@ -124,7 +128,7 @@ namespace HopperFormat
                 if (!eligible)
                 {
                     // Hint only: eligibility checks must preserve the last run's outputs.
-                    _pill?.Show("Select components to format");
+                    ShowPill("Select components to format");
                 }
             });
             return eligible;
@@ -171,11 +175,14 @@ namespace HopperFormat
                 var locked = GroupMembership.LockedDiagnostic(_document, capture.CandidateIds);
                 if (locked != null) { Finish(locked); return; }
                 if (capture.Objects.Count == 0) { Finish("Select components to format"); return; }
-                var result = LayoutSolver.Solve(capture.Snapshot);
-                _detail.AddRange(result.Log);
+                var result = _solve(capture.Snapshot);
+                foreach (var line in result.Log)
+                    if (result.Unstable && line.StartsWith("Unstable:", StringComparison.Ordinal)) _log.Add(line);
+                    else _detail.Add(line);
                 if (!result.Success) { Finish(result.Diagnostic); return; }
                 var success = FormatApplier.Apply(_document, result.Moves, capture.Objects, out var status);
                 if (success) LastMoves = result.Moves.Count;
+                if (success && result.Unstable) status += " (not fully settled, FF again may adjust)";
                 Finish(status);
             }
             finally { _running = false; }
@@ -190,21 +197,40 @@ namespace HopperFormat
         private void Show(string status)
         {
             Status = status;
-            if (CurrentCanvasDocument) _pill?.Show(status);
+            ShowPill(status);
             _owner?.ScheduleOutputRefresh();
         }
 
-        internal void Guard(string where, Action action)
+        private void ShowPill(string status)
+        {
+            if (!_pillDisabled && CurrentCanvasDocument)
+                GuardPill("Feedback show", () => _pill?.Show(status));
+        }
+
+        private void GuardPill(string where, Action action)
+        {
+            if (!_pillDisabled) Guard(where, action, true);
+        }
+
+        internal void Guard(string where, Action action) => Guard(where, action, false);
+
+        private void Guard(string where, Action action, bool fromPill)
         {
             try { action(); }
             catch (Exception error)
             {
+                if (fromPill)
+                {
+                    _pillDisabled = true;
+                    try { _pill?.Disable(); }
+                    catch (Exception) { /* Keep the original pill error if disabling also fails. */ }
+                }
                 ResetTaps();
                 _running = false;
                 LastMoves = 0;
                 Status = "Error - see Log";
                 _log.Add($"{where}: {error}");
-                try { if (CurrentCanvasDocument) _pill?.Show(Status); }
+                try { if (!fromPill) ShowPill(Status); }
                 catch (Exception) { /* Reporting must not escape a host callback. */ }
                 try { _owner?.ScheduleOutputRefresh(); }
                 catch (Exception) { /* The Log output retains the original exception. */ }

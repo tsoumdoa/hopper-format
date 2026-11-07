@@ -43,6 +43,7 @@ namespace HopperFormat
 
         protected override void SolveInstance(IGH_DataAccess DA) => _session.Guard("SolveInstance", () =>
         {
+            _outputRefreshPending = false;
             double gapX = 30, gapY = 16, stackGap = 6;
             DA.GetData(0, ref _enabled);
             DA.GetData(1, ref gapX);

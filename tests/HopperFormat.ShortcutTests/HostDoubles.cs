@@ -207,6 +207,12 @@ namespace Grasshopper.GUI.Canvas
         internal static System.Windows.Forms.Keys NavigationZoomOut = System.Windows.Forms.Keys.None;
         internal bool ModifiersEnabled = true, IsActiveInteraction, IsActiveWidget, IsActiveObject;
         internal Graphics Graphics;
+        internal int Invalidations;
+        protected override void OnInvalidated(System.Windows.Forms.InvalidateEventArgs e)
+        {
+            Invalidations++;
+            base.OnInvalidated(e);
+        }
         internal event Action<GH_Canvas> CanvasPostPaintOverlay;
         internal event EventHandler<GH_CanvasDocumentChangedEventArgs> DocumentChanged;
         private Grasshopper.Kernel.GH_Document _document;

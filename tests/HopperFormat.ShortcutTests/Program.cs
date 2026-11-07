@@ -1,3 +1,4 @@
+extern alias componentHarness;
 using System;
 using System.Drawing;
 using System.Runtime.InteropServices;
@@ -24,7 +25,8 @@ internal static class Program
             StartPosition = FormStartPosition.Manual, Location = new Point(-10000, -10000), Size = new Size(500, 300) };
         form.Shown += (_, _) => form.BeginInvoke((Action)(() =>
         {
-            try { RunTests(form); _failures += HostAdapterTests.Run(); _failures += SessionTests.Run(form); }
+            try { RunTests(form); _failures += HostAdapterTests.Run(); _failures += SessionTests.Run(form);
+                _failures += componentHarness::ComponentRegressionTests.Run(); }
             catch (Exception error) { _failures++; Console.WriteLine("FAIL runner: " + error); }
             finally { form.Close(); }
         }));

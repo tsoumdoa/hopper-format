@@ -146,11 +146,12 @@ namespace HopperFormat.Layout
         {
             StackSlots();
             var segments = Segments[forward ? c - 1 : c];
+            var attachedByItem = segments.ToLookup(s => forward ? s.To : s.From);
             var bary = new Dictionary<OrderItem, double>();
             foreach (var item in Columns[c])
             {
-                var attached = segments.Where(s => (forward ? s.To : s.From) == item).ToArray();
-                if (attached.Length == 0) continue;
+                var attached = attachedByItem[item];
+                if (!attached.Any()) continue;
                 bary[item] = attached.Average(s => forward
                     ? s.From.Slot + s.FromY - s.ToY : s.To.Slot + s.ToY - s.FromY);
             }
