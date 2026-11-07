@@ -1,0 +1,16 @@
+---
+name: hopperformat
+version: 0.1.0
+authors:
+  - aectooling by tomoS
+description: >
+  Format selected Grasshopper components and floating parameters as a
+  left-to-right dataflow with a double tap of F or the component menu.
+  Selection only, with locked-group protection and one undo record per run.
+url: https://github.com/tsoumdoa/hopper-format
+icon: icon.png
+keywords:
+  - utility
+  - productivity
+  - layout
+  - canvas

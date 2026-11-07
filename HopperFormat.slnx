@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="HopperFormat.csproj" />
+  <Project Path="tests/HopperFormat.SolverTests/HopperFormat.SolverTests.csproj" />
+  <Project Path="tests/HopperFormat.ShortcutTests/HopperFormat.ShortcutTests.csproj" />
+</Solution>

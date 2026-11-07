@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../CanvasShortcutHook.cs" Link="CanvasShortcutHook.cs" />
+    <Compile Include="../../SelectionSnapshot.cs" Link="SelectionSnapshot.cs" />
+    <Compile Include="../../FormatApplier.cs" Link="FormatApplier.cs" />
+    <Compile Include="../../GroupMembership.cs" Link="GroupMembership.cs" />
+    <Compile Include="../../FormatSession.cs" Link="FormatSession.cs" />
+    <Compile Include="../../FeedbackPill.cs" Link="FeedbackPill.cs" />
+    <Compile Include="../../Layout/*.cs" Link="Layout/%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>
