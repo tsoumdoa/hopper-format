@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../../HopperFormatComponent.cs" Link="HopperFormatComponent.cs" />
+    <Compile Include="../../../HopperFormatInfo.cs" Link="HopperFormatInfo.cs" />
+    <Compile Include="../../../Layout/Model.cs" Link="Model.cs" />
+    <EmbeddedResource Include="../../../icon.png" LogicalName="HopperFormat.icon.png" />
+  </ItemGroup>
+</Project>

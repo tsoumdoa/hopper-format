@@ -1,0 +1,72 @@
+# Build outputs
+bin/
+obj/
+out/
+artifacts/
+Debug/
+Release/
+
+# Rhino/Grasshopper package outputs
+*.gha
+*.rhp
+*.yak
+yak/*.gha
+yak/*.yak
+
+# .NET restore/build generated files
+project.lock.json
+project.assets.json
+*.nuget.g.props
+*.nuget.g.targets
+*.nuget.dgspec.json
+*.nupkg
+*.snupkg
+
+# IDE/user state
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.rsuser
+*.userprefs
+.vscode/.ropeproject/
+.vscode/.history/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.cache
+*.pidb
+*.svclog
+*.pdb
+*.mdb
+*.opendb
+*.opensdf
+*.sdf
+*.ilk
+*.iobj
+*.ipdb
+~$*
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Test/coverage outputs
+TestResults/
+coverage/
+coverage*.json
+coverage*.xml
+coverage*.info
+*.coverage
+*.coveragexml
