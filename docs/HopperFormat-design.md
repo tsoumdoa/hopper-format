@@ -1,12 +1,12 @@
 # HopperFormat: format a group on demand, read it as a function
 
-Design proposal, revised 2026-11-08. Author: tomoS (aectooling). Status: phase 1 (selection-only FF) shipped in PR #1; phase 2 (groups, FG) specified in 5.9 and being built.
+Design proposal, revised 2026-11-08. Author: tomoS (aectooling). Status: phase 1 (selection-only FF) shipped in PR #1; phase 2 (groups, format all) specified in 5.9 and being built.
 
 ## 1. Thesis
 
 A Grasshopper group should read like one small function: all the logic for one job, packed tight, inputs on the left, result on the right. Today that layout is hand-made and decays with every edit.
 
-HopperFormat is a formatter you run, not a rule that runs itself. Tap **F twice** and the selection, including any selected groups, is re-laid out as a dataflow; tap **F then G** with nothing selected to format every group in the document: columns by rank, rows chosen to untangle wires, widgets pressed against their consumers, one undo record. Nothing moves unless you ask.
+HopperFormat is a formatter you run, not a rule that runs itself. Tap **F twice** and the selection, including any selected groups, is re-laid out as a dataflow; with nothing selected, FF formats every group in the document: columns by rank, rows chosen to untangle wires, widgets pressed against their consumers, one undo record. Nothing moves unless you ask.
 
 An explicit trigger is the whole point. A formatter that fires on its own after every drop has to reason about which drag is in progress, which plugin saw the drop first, and whether HopperGroup will read its move as the user leaving a group. A formatter that fires on FF never conflicts with a drag, with HopperGroup, or with HopperDraw, because it runs when nothing else is happening and leaves one clean record behind. Continuous enforcement is kept as a later, opt-in extension, and only after the HopperGroup handshake in section 6 exists.
 
@@ -34,15 +34,18 @@ Tap F twice with the canvas focused. Same hook, timing window, and feedback pill
 
 - Selected components and floating params are laid out as one function (phase one).
 - Each selected group has its contents formatted bottom-up; two or more selected units (groups or loose nodes) are then arranged by dataflow (5.9).
-- With nothing selected, a second F does nothing; the pill says `Select components to format, or tap F then G to format all groups`.
+- With **nothing selected**, FF formats every group in the document ("format all", below).
 
 The pill names the target after the first tap, for example `Format selection (14 objects) · tap F again`. The result is one undo record: `Format selection`, or `Format groups` when the selection contains groups. Groups tagged `[lock]` are never formatted or moved.
 
-### The FG gesture (phase 2)
+### Format all: FF with nothing selected (phase 2)
 
-With **nothing selected**, tap F then G to format every group in the document (5.9.4). Each group's contents are formatted, then the groups are tidied in place. Ungrouped objects never move. The result is one undo record named `Format all groups`, and the component menu offers the same action as `Format all groups`.
+With **nothing selected**, FF formats every group in the document (5.9.4): each group's contents are formatted, then the groups are tidied in place. Ungrouped objects never move.
 
-FG requires an empty selection because G is HopperGroup's GG key. With a selection, HopperGroup may take G as its first tap, depending on which plugin subclassed the canvas first. With nothing selected, HopperGroup ignores G. The F registration therefore captures F when nothing is selected, and accepts G as the second key only while that F is pending. The shared `KeyObserved` protocol is unchanged, so F-G-F still never counts as a double tap in any plugin.
+- **Gesture:** the same F double-tap, timing window and pill as FF. The first tap names the target before anything moves, e.g. `Format all groups (12) · tap F again`. With no formattable group, the pill says `No groups to format`.
+- **Undo:** one record named `Format all groups`, reverted by a single Undo.
+- **Menu:** the component menu offers the same action as `Format all groups`, whatever is selected.
+- **Hook change:** the F registration now also captures F when the selection is empty. This replaces the earlier F-then-G idea. That idea needed two-key sequences in the shared hook, and clashed with HopperGroup's G whenever something was selected.
 
 ### Option tags (in the group nickname, case-insensitive, like `[lock]`)
 
@@ -202,14 +205,14 @@ The non-crossing chains make these block dependencies acyclic. Place upper neigh
 
 ### 5.9 Groups (phase 2)
 
-Phase one formats one flat selection. Phase two adds groups at two levels. **Inside** each group, the members are laid out with steps 1–6, as in phase one. **Between** groups, the groups themselves are arranged. FF and FG differ only in what they target and in how the groups are arranged (section 3).
+Phase one formats one flat selection. Phase two adds groups at two levels. **Inside** each group, the members are laid out with steps 1–6, as in phase one. **Between** groups, the groups themselves are arranged. A selection and format all (FF with nothing selected) differ only in what they target and in how the groups are arranged (section 3).
 
 #### 5.9.1 Group tree and ownership
 
 - Membership comes from `GH_Group.ObjectIDs`. A group's **direct members** are its nodes, plus its child groups as single units; a child group's own members are not direct members.
 - A **label group** contains exactly one node, transitively. Example: `TitleBlockRange` wrapping one param. Label groups are **see-through**: their node counts as a direct member of the parent, and the label box follows it because Grasshopper derives group bounds from members. This keeps every phase-one golden layout unchanged when its params are labelled.
-- **Ownership must be exclusive.** A node in two groups that are not nested in each other has no single correct layout. FF refuses with a diagnostic naming the node; FG skips that top-level group and reports it.
-- `[lock]` groups are never formatted and never moved. In FG they stay put as obstacles.
+- **Ownership must be exclusive.** A node in two groups that are not nested in each other has no single correct layout. FF on a selection refuses with a diagnostic naming the node; format all skips that top-level group and reports it.
+- `[lock]` groups are never formatted and never moved. In format all they stay put as obstacles.
 
 #### 5.9.2 Inside groups (bottom-up)
 
@@ -221,7 +224,7 @@ Groups are processed in post-order: children before parents.
    - It has one **input port** per member receiving a wire from outside the child, at that member's input-grip y relative to the child box top.
    - It has one **output port** per member sending a wire out of the child, at that member's output-grip y.
    - Wires stay port-level, as in phase one.
-3. Contract each child to one node and check the contracted graph for cycles. `a1 → b → a2`, with `a1` and `a2` in child A and `b` outside it, contracts to a cycle. It is refused (FF) or skipped (FG) with a diagnostic.
+3. Contract each child to one node and check the contracted graph for cycles. `a1 → b → a2`, with `a1` and `a2` in child A and `b` outside it, contracts to a cycle. It is refused (selection) or skipped (format all) with a diagnostic.
 4. Group attributes have no writable pivot. A group moves by moving each of its descendants. All inner moves and outer translations are composed into **one final pivot per descendant** before anything is written, and recorded in one undo record (section 6).
 
 #### 5.9.3 Arranging groups with FF: dataflow re-plan
@@ -238,9 +241,9 @@ Used when FF's selection holds two or more top-level units, where a unit is a gr
 - **Anchor:** the selection's top-left. Nothing outside the selection moves.
 - A selection that is exactly one group formats that group's contents only.
 
-#### 5.9.4 Arranging groups with FG: tidy in place
+#### 5.9.4 Arranging groups with format all: tidy in place
 
-FG targets every top-level group in the document. It keeps each group roughly where the user put it.
+Format all (FF with nothing selected) targets every top-level group in the document. It keeps each group roughly where the user put it.
 
 1. Format every target group's contents (5.9.2), each anchored at its own top-left.
 2. **Rows.** Sort groups by top. A group joins the current row when its top is within `RowSnap` of the row's top; `RowSnap = min(GroupGapY, 0.25 × the shorter height)`. Every group in a row takes the row's smallest top, so box edges line up.
@@ -252,9 +255,9 @@ FG targets every top-level group in the document. It keeps each group roughly wh
 
 #### 5.9.5 Guarantees for groups
 
-- **Idempotent:** FF or FG on a freshly formatted result moves nothing, at both levels. The geometric fixed-point recognition of 5.8 extends to RigidGroup nodes and to the tidy pass. Snapped edges and gaps of exactly `GroupGapX`/`GroupGapY` are stable.
+- **Idempotent:** FF on a selection or format all on a freshly formatted result moves nothing, at both levels. The geometric fixed-point recognition of 5.8 extends to RigidGroup nodes and to the tidy pass. Snapped edges and gaps of exactly `GroupGapX`/`GroupGapY` are stable.
 - **Deterministic and non-overlapping:** among group boxes, and between groups and obstacles.
-- **Non-targets untouched:** FF moves only selected units and their descendants; FG moves only members of target groups.
+- **Non-targets untouched:** FF on a selection moves only selected units and their descendants; format all moves only members of target groups.
 - **Phase-one layouts unchanged:** a flat selection, or a group whose only nested groups are label groups, lays out exactly as in phase one.
 
 ### 5.10 Guarantees the tests enforce
@@ -296,7 +299,7 @@ Sequence on the second tap:
 
 The fix lives in HopperGroup and is small. When an undo record whose name starts with `Format ` is added (`Format selection`, `Format groups`, `Format all groups`), HopperGroup re-snapshots settled positions and outlines for the affected groups, exactly as its own Refresh does.
 
-FG moves nearly every group, so this handshake ships before FG is recommended alongside HopperGroup (phase 2, stage 3). Until then, the HopperFormat README tells users to tap Refresh on HopperGroup after formatting.
+Format all moves nearly every group, so this handshake ships before format all is recommended alongside HopperGroup (phase 2, stage 3). Until then, the HopperFormat README tells users to tap Refresh on HopperGroup after formatting.
 
 No background triggers exist in phase one. There is nothing to debounce, no re-entrancy to guard, and no drag to stay out of.
 
@@ -324,8 +327,8 @@ Live Rhino checklist before release: FF with HopperGroup installed, then a drag 
 1. **FF on a flat target.** Pure solver, headless tests, one-shot format with its own undo record, external hints. Shipped as the selection-only MVP (PR #1); option tags deferred.
 2. **Groups** (5.9), in three stages:
    1. **FF with groups.** Groups in the selection: exclusive-ownership check, see-through label groups, bottom-up inner formatting with RigidGroup children and composed pivots, and the dataflow re-plan with box-edge alignment for several units (5.9.3).
-   2. **FG.** The F-then-G gesture and the `Format all groups` menu item, plus tidy-in-place arrangement with fixed obstacles (5.9.4).
-   3. **HopperGroup handshake.** The record-name convention in HopperGroup (section 6), shipped as a HopperGroup release before FG is recommended alongside it.
+   2. **Format all.** FF with nothing selected and the `Format all groups` menu item, plus tidy-in-place arrangement with fixed obstacles (5.9.4).
+   3. **HopperGroup handshake.** The record-name convention in HopperGroup (section 6), shipped as a HopperGroup release before format all is recommended alongside it.
    
    Later: the `gh_format` tool for hoppercode.
 3. **Optional continuous mode**, only if phase one proves the solver calm. An explicit `[flow]` tag re-runs FF after a drop inside that group, built on the handshake. `[pin]` is deferred: Grasshopper moves only the dragged object during a drag, so a rigid group needs interaction-level interception like HopperDraw's, not a re-translate on drop.
@@ -348,9 +351,10 @@ Resolved:
 - **Gaps:** 30/16/6 inside groups; `GroupGapX = 50` and `GroupGapY = 40` between groups.
 - **Return constraint:** on by default.
 - **Selection spanning groups:** FF formats each group's contents, then re-plans the groups by dataflow (5.9.3).
-- **FG arrangement:** tidy in place with box-edge alignment; ungrouped objects never move (5.9.4).
+- **Global gesture:** FF with nothing selected formats all groups (F then G was dropped: it clashed with HopperGroup's G).
+- **Format-all arrangement:** tidy in place with box-edge alignment; ungrouped objects never move (5.9.4).
 - **Label groups:** see-through.
 
 Open:
 - Should `GroupGapX`/`GroupGapY` become component inputs, or stay constants until someone asks?
-- Should FG eventually offer the dataflow re-plan too, for example through a `[flow]` tag on a parent group?
+- Should format all eventually offer the dataflow re-plan too, for example through a `[flow]` tag on a parent group?

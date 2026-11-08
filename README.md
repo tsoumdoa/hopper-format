@@ -51,7 +51,7 @@ uses the ordinary layout rules and its label follows. Overlapping membership in
 unrelated groups refuses the run and names the object. A selected **[lock]** group,
 a node inside one, or a locked descendant blocks formatting without moving anything.
 
-**FG**, the F-then-G gesture for all groups, is coming later. After formatting groups
+**Format all** (FF with nothing selected, formatting every group) is coming later. After formatting groups
 managed by HopperGroup, tap **Refresh** on HopperGroup; its automatic handshake is
 also coming later.
 
