@@ -19,7 +19,7 @@ namespace HopperFormat
         internal bool SessionEligible => _enabled && !Locked && !_contextUnloaded;
 
         public HopperFormatComponent() : base("Hopper Format", "HopperFormat",
-            "Format selected components and floating parameters as a left-to-right dataflow. Tap F twice or use Format selection in the menu.",
+            "Format selected components and groups as a left-to-right dataflow, or tidy all groups with nothing selected. Tap F twice or use the format menu actions.",
             "Params", "Util")
         {
             ObjectChanged += OnComponentChanged;
@@ -27,7 +27,7 @@ namespace HopperFormat
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
-            pManager.AddBooleanParameter("Enabled", "Enabled", "Enable format selection and the FF shortcut.", GH_ParamAccess.item, true);
+            pManager.AddBooleanParameter("Enabled", "Enabled", "Enable formatting and the FF shortcut.", GH_ParamAccess.item, true);
             pManager.AddNumberParameter("Gap X", "Gap X", "Horizontal gap between columns in canvas units.", GH_ParamAccess.item, 30);
             pManager.AddNumberParameter("Gap Y", "Gap Y", "Vertical gap between nodes in canvas units.", GH_ParamAccess.item, 16);
             pManager.AddNumberParameter("Stack Gap", "Stack Gap", "Gap between widgets feeding the same consumer.", GH_ParamAccess.item, 6);
@@ -197,7 +197,10 @@ namespace HopperFormat
         {
             base.AppendAdditionalComponentMenuItems(menu);
             _session.Guard("Component menu", () =>
-                Menu_AppendItem(menu, "Format selection", (_, _) => _session.Run(), _active && SessionEligible));
+            {
+                Menu_AppendItem(menu, "Format selection", (_, _) => _session.Run(), _active && SessionEligible);
+                Menu_AppendItem(menu, "Format all groups", (_, _) => _session.RunAll(), _active && SessionEligible);
+            });
         }
 
         protected override Bitmap Icon => HopperFormatInfo.LoadIcon();
