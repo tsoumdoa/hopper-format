@@ -92,14 +92,71 @@ internal static class SessionTests
             f.Document.Selection.Clear();
             var refreshes = f.Owner.OutputRefreshes;
             Tap(f.Canvas);
-            Assert(f.Session.Status == "Format all groups (1) · tap F again" && f.Document.UndoUtil.Creates == 0
-                && f.First.Attributes == null && f.Owner.OutputRefreshes == refreshes + 1, "all preview counted/measured/applied incorrectly");
+            Assert(PillText(f) == "Format all groups (1) · tap F again" && f.Document.UndoUtil.Creates == 0
+                && f.First.Attributes == null && f.Owner.OutputRefreshes == refreshes, "all preview counted/measured/applied incorrectly");
             Tap(f.Canvas);
             Assert(f.Session.Status.StartsWith("Formatted all groups · ") && f.Session.Status.EndsWith(" (1 skipped)")
                 && f.Document.UndoUtil.Records.Single().Name == "Format all groups" && f.Session.LastMoves > 0
                 && f.Session.Log(false).Any(l => l.Contains("Skipped group 'Fixed [lock]'")) && f.ForwardedDown == 0,
                 "all FF failed: " + f.Session.Status);
             Assert(lockedNode.Attributes.Pivot == lockedNode.InitialPivot && f.Owner.Attributes.Pivot == f.Owner.InitialPivot, "fixed objects moved");
+        });
+        Check(form, "Session empty-selection eligibility performs no ownership walk or output refresh", f =>
+        {
+            var child = new GH_Group(); child.ObjectIDs.Add(f.First.InstanceGuid);
+            var root = new GH_Group(); root.ObjectIDs.Add(child.InstanceGuid);
+            var locked = new GH_Group { NickName = "Fixed [LOCK]" }; locked.ObjectIDs.Add(f.Second.InstanceGuid);
+            f.Document.Objects.AddRange(new[] { root,child,locked }); f.Document.Selection.Clear();
+            root.ObjectIDReads = child.ObjectIDReads = locked.ObjectIDReads = 0;
+            var status = f.Session.Status; var log = f.Session.Log(true).ToArray(); var refreshes = f.Owner.OutputRefreshes;
+            var method = typeof(FormatSession).GetMethod("CanCaptureShortcut", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            for (int i = 0; i < 6; i++) Assert((bool)method.Invoke(f.Session,new object[] { Keys.F }), "cheap eligibility rejected root");
+            // TopLevelGroups reads each membership list once per call; ownership
+            // preflight would read root/child lists again to descend and ascend.
+            Assert(root.ObjectIDReads == 6 && child.ObjectIDReads == 6 && locked.ObjectIDReads == 6,
+                "eligibility walked ownership: " + root.ObjectIDReads + "," + child.ObjectIDReads + "," + locked.ObjectIDReads);
+            Assert(f.Session.Status == status && f.Session.LastMoves == 0 && f.Session.Log(true).SequenceEqual(log)
+                && f.Owner.OutputRefreshes == refreshes && f.First.Attributes == null && f.Document.UndoUtil.Creates == 0, "eligibility changed output state");
+        });
+        Check(form, "Session first format-all tap counts eligible roots once and preserves previous outputs", f =>
+        {
+            f.Session.Run();
+            var root = new GH_Group(); root.ObjectIDs.AddRange(new[] { f.First.InstanceGuid,f.Second.InstanceGuid });
+            var nested = new GH_Group(); nested.ObjectIDs.Add(f.First.InstanceGuid); root.ObjectIDs.Add(nested.InstanceGuid);
+            var other = new GH_Group();
+            var locked = new GH_Group { NickName = "[lock]" };
+            f.Document.Objects.AddRange(new[] { root,nested,other,locked }); f.Document.Selection.Clear();
+            var groups = new[] { root,nested,other,locked };
+            foreach (var g in groups) g.ObjectIDReads = 0;
+            Assert(FormatAllCapture.EligibleCount(f.Document) == 2,"preflight fixture count");
+            var expected = groups.Select(g => g.ObjectIDReads).ToArray();
+            foreach (var g in groups) g.ObjectIDReads = 0;
+            var status = f.Session.Status; var moves = f.Session.LastMoves; var log = f.Session.Log(true).ToArray();
+            var refreshes = f.Owner.OutputRefreshes; var undos = f.Document.UndoUtil.Creates;
+            var dispatch = typeof(FormatSession).GetMethod("Dispatch", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            dispatch.Invoke(f.Session,new object[] { Keys.F,true });
+            dispatch.Invoke(f.Session,new object[] { Keys.F,true }); // repeat is ignored
+            dispatch.Invoke(f.Session,new object[] { Keys.F,false });
+            Assert(PillText(f) == "Format all groups (2) · tap F again" && groups.Select(g => g.ObjectIDReads).SequenceEqual(expected),
+                "first tap counted preflight more than once or counted nested/locked groups");
+            Assert(f.Session.Status == status && f.Session.LastMoves == moves && f.Session.Log(true).SequenceEqual(log)
+                && f.Owner.OutputRefreshes == refreshes && f.Document.UndoUtil.Creates == undos,"first tap changed prior outputs");
+        });
+        Check(form, "Session only skipped groups show No groups to format and never arm a second tap", f =>
+        {
+            f.Session.Run();
+            var a = new GH_Group(); var b = new GH_Group();
+            a.ObjectIDs.Add(f.First.InstanceGuid); b.ObjectIDs.Add(f.First.InstanceGuid);
+            f.Document.Objects.AddRange(new[] { a,b }); f.Document.Selection.Clear();
+            var status = f.Session.Status; var moves = f.Session.LastMoves; var log = f.Session.Log(true).ToArray();
+            var refreshes = f.Owner.OutputRefreshes; var undos = f.Document.UndoUtil.Creates;
+            for (int i = 0; i < 3; i++) {
+                Tap(f.Canvas);
+                var first = typeof(FormatSession).GetField("_firstTap",System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                Assert(PillText(f) == "No groups to format" && first.GetValue(f.Session) == null,"zero-count tap was armed");
+            }
+            Assert(f.Session.Status == status && f.Session.LastMoves == moves && f.Session.Log(true).SequenceEqual(log)
+                && f.Owner.OutputRefreshes == refreshes && f.Document.UndoUtil.Creates == undos,"zero-count tap changed prior outputs");
         });
         Check(form, "Session Format all groups menu runs with or without selection and no-op records nothing", f =>
         {
@@ -120,7 +177,9 @@ internal static class SessionTests
             var text = typeof(FeedbackPill).GetField("_text", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
             Assert((string)text.GetValue(f.Pill) == "No groups to format" && f.Session.Status == status && f.Session.LastMoves == 0
                 && f.Session.Log(true).SequenceEqual(log) && f.Owner.OutputRefreshes == refreshes && f.ForwardedDown == 1
-                && f.First.Attributes == null && f.Document.UndoUtil.Creates == 0, "ineligible all check had side effects");
+                && f.First.Attributes == null && f.Document.UndoUtil.Creates == 0
+                && typeof(FormatSession).GetField("_firstTap",System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(f.Session) == null,
+                "ineligible all check had side effects or armed a tap");
         });
         Check(form, "Session pill factory failure keeps hook handlers and menu formatting working", f =>
         {
@@ -254,6 +313,9 @@ internal static class SessionTests
         });
         return _failures;
     }
+
+    private static string PillText(Fixture f) => (string)typeof(FeedbackPill).GetField("_text",
+        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(f.Pill);
 
     private static void Tap(Control canvas)
     {

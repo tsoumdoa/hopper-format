@@ -43,7 +43,7 @@ namespace HopperFormat.Layout
             foreach (var target in snapshot.Targets.OrderBy(t => t.Id))
             {
                 var reason = target.SkipReason ?? (ownership.Contains(target.Id) ? "Overlapping membership between top-level groups" : null);
-                var result = reason == null ? SolveInner(target.Hierarchy) : null;
+                var result = reason == null ? HierarchySolver.Solve(target.Hierarchy) : null;
                 reason = reason ?? (result.Success ? null : result.Diagnostic);
                 if (reason != null)
                 {
@@ -97,35 +97,6 @@ namespace HopperFormat.Layout
         private static IEnumerable<HierarchyGroup> Groups(HierarchyGroup g) => new[] { g }.Concat(g.Children.SelectMany(Groups));
         private static bool SamePivot(double a, double b) => Math.Abs(a - b) <= FloatTolerance(b);
         private static double FloatTolerance(double value) => Math.Max(1e-7, 2 * Math.Abs((double)MathF.BitIncrement((float)value) - (float)value));
-        private static Result SolveInner(HierarchySnapshot snapshot)
-        {
-            var original = HierarchySolver.Solve(snapshot);
-            if (!original.Success) return original;
-            var nodes = snapshot.Groups.SelectMany(Groups).SelectMany(g => g.Nodes).GroupBy(n => n.Id).Select(g => g.First()).OrderBy(n => n.Id).ToArray();
-            if (nodes.Length == 0) return original;
-            var pivot = new Vec2(nodes[0].CurrentTop.X + nodes[0].PivotOffset.X, nodes[0].CurrentTop.Y + nodes[0].PivotOffset.Y);
-            double dx = pivot.X - LayoutSolver.Round(pivot.X), dy = pivot.Y - LayoutSolver.Round(pivot.Y);
-            // Exact box-edge snapping can rigidly translate an integer pivot lattice by
-            // a fraction. Solve in that lattice's frame so a second run preserves it.
-            if (nodes.Any(n => Math.Abs(n.CurrentTop.X + n.PivotOffset.X - dx - LayoutSolver.Round(n.CurrentTop.X + n.PivotOffset.X - dx)) > 1e-7 ||
-                Math.Abs(n.CurrentTop.Y + n.PivotOffset.Y - dy - LayoutSolver.Round(n.CurrentTop.Y + n.PivotOffset.Y - dy)) > 1e-7) ||
-                Math.Abs(dx) < 1e-8 && Math.Abs(dy) < 1e-8) return original;
-            HierarchyGroup Copy(HierarchyGroup g) => new HierarchyGroup { Id = g.Id, Label = g.Label, Locked = g.Locked, Padding = g.Padding,
-                Nodes = g.Nodes.Select(n => new Node { Id = n.Id, Label = n.Label, Kind = n.Kind, Widget = n.Widget,
-                    Width = n.Width, Height = n.Height, Inputs = n.Inputs, Outputs = n.Outputs, PivotOffset = n.PivotOffset,
-                    CurrentTop = new Vec2(n.CurrentTop.X - dx,n.CurrentTop.Y - dy) }).ToArray(),
-                NonNodes = g.NonNodes.Select(n => new NonNodeMember { Id = n.Id, Label = n.Label, PivotOffset = n.PivotOffset,
-                    Bounds = Translate(n.Bounds,-dx,-dy) }).ToArray(), Children = g.Children.Select(Copy).ToArray() };
-            var result = HierarchySolver.Solve(new HierarchySnapshot { Groups = snapshot.Groups.Select(Copy).ToArray(),
-                Options = snapshot.Options, Edges = snapshot.Edges,
-                Inbound = snapshot.Inbound.Select(e => new ExternalInbound { Node = e.Node, Port = e.Port, SourceGripY = e.SourceGripY - dy }).ToArray(),
-                Outbound = snapshot.Outbound.Select(e => new ExternalOutbound { Node = e.Node, Port = e.Port, TargetGripY = e.TargetGripY - dy }).ToArray() });
-            if (!result.Success) return result;
-            result.Tops = result.Tops.ToDictionary(p => p.Key,p => new Vec2(p.Value.X + dx,p.Value.Y + dy));
-            result.GroupBoxes = result.GroupBoxes.ToDictionary(p => p.Key,p => Translate(p.Value,dx,dy));
-            result.Moves = result.Moves.Select(m => new Move { Id = m.Id, Pivot = new Vec2(m.Pivot.X + dx,m.Pivot.Y + dy) }).ToArray();
-            return result;
-        }
         private static IEnumerable<Guid> ObjectIds(HierarchyGroup g, HashSet<Guid> seen)
         {
             if (g == null || !seen.Add(g.Id)) yield break;
@@ -151,6 +122,13 @@ namespace HopperFormat.Layout
             if (!Graph.Finite(gx) || !Graph.Finite(gy) || gx < 0 || gy < 0)
                 return new Result { Diagnostic = "Group gaps must be finite and non-negative." };
             var boxes = targets.ToDictionary(p => p.Key, p => p.Value);
+            // All coordinates are reconstructed from the starting box and an integer
+            // translation, including across passes. Fractional padding stays rigid.
+            var translations = targets.ToDictionary(p => p.Key, _ => new Vec2(0, 0));
+            double SnapX(Guid id, double x) => targets[id].X + LayoutSolver.Round(x - targets[id].X);
+            double SnapY(Guid id, double y) => targets[id].Y + LayoutSolver.Round(y - targets[id].Y);
+            double GapX(Guid id, double x) => targets[id].X + Math.Ceiling(x - targets[id].X - Epsilon);
+            double GapY(Guid id, double y) => targets[id].Y + Math.Ceiling(y - targets[id].Y - Epsilon);
             bool changed = false;
             int rounds = 0;
             for (; rounds < 5;)
@@ -169,16 +147,31 @@ namespace HopperFormat.Layout
                     row.Members.Add(id);
                 }
                 var lefts = new Dictionary<Guid, double>();
-                double? cluster = null;
+                var columns = new List<List<Guid>>();
                 foreach (var id in boxes.Keys.OrderBy(id => boxes[id].X).ThenBy(id => id))
                 {
-                    if (!cluster.HasValue || boxes[id].X - cluster.Value > gx / 2 + Epsilon) cluster = boxes[id].X;
-                    lefts[id] = cluster.Value;
+                    var column = columns.LastOrDefault();
+                    if (column == null || boxes[id].X - boxes[column[0]].X > gx / 2 + Epsilon)
+                    {
+                        column = new List<Guid>(); columns.Add(column);
+                    }
+                    column.Add(id);
+                }
+                foreach (var column in columns)
+                {
+                    double left = boxes[column[0]].X;
+                    // The smallest-Guid representative prevents snap/even/push
+                    // interactions from changing the snap reference between passes.
+                    double anchor = boxes[column.OrderBy(id => id).First()].X;
+                    bool aligned = column.Max(id => boxes[id].X) - left < 1 - Epsilon;
+                    foreach (var id in column) lefts[id] = aligned ? boxes[id].X : SnapX(id, anchor);
                 }
                 var placed = obstacles.ToList();
                 var next = new Dictionary<Guid, Box>();
                 foreach (var row in rows)
                 {
+                    bool aligned = row.Members.Max(id => boxes[id].Y) - row.Top < 1 - Epsilon;
+                    double rowAnchor = boxes[row.Members.OrderBy(id => id).First()].Y;
                     double top = row.Members.Max(id => {
                         var b = boxes[id]; double x = lefts[id];
                         var above = placed.Where(p => Overlap(p.X, p.Right, x, x + b.Width) && p.Y < row.Top - Epsilon).ToArray();
@@ -189,25 +182,32 @@ namespace HopperFormat.Layout
                     foreach (var id in row.Members.OrderBy(id => lefts[id]).ThenBy(id => id))
                     {
                         var b = boxes[id]; double x = lefts[id];
-                        var sameHeight = placed.Where(p => Overlap(p.Y, p.Bottom, top, top + b.Height)).ToArray();
+                        // Keep a snapped row within one unit, and round
+                        // a shared vertical clearance upward for every member.
+                        double y = Math.Abs(top - row.Top) > Epsilon ? GapY(id, top)
+                            : aligned ? b.Y : SnapY(id, rowAnchor);
+                        var sameHeight = placed.Where(p => Overlap(p.Y, p.Bottom, y, y + b.Height)).ToArray();
                         var left = sameHeight.Where(p => p.X < x - Epsilon).ToArray();
                         if (left.Length > 0)
                         {
                             double right = left.Max(p => p.Right);
-                            if (x - right < 2 * gx - Epsilon) x = right + gx;
+                            if (x - right < 2 * gx - Epsilon) x = GapX(id, right + gx);
                         }
                         while (true)
                         {
-                            var collisions = placed.Where(p => Overlap(p.Y, p.Bottom, top - gy, top + b.Height + gy)
+                            var collisions = placed.Where(p => Overlap(p.Y, p.Bottom, y - gy, y + b.Height + gy)
                                 && x < p.Right + gx - Epsilon && x + b.Width > p.X - gx + Epsilon).ToArray();
                             if (collisions.Length == 0) break;
-                            x = collisions.Max(p => p.Right) + gx;
+                            x = GapX(id, collisions.Max(p => p.Right) + gx);
                         }
-                        var result = new Box(x, top, b.Width, b.Height);
+                        var result = new Box(x, y, b.Width, b.Height);
                         next.Add(id, result); placed.Add(result);
                     }
                 }
-                changed = boxes.Any(p => Math.Abs(next[p.Key].X - p.Value.X) > Epsilon || Math.Abs(next[p.Key].Y - p.Value.Y) > Epsilon);
+                var nextTranslations = next.ToDictionary(p => p.Key, p => new Vec2(
+                    LayoutSolver.Round(p.Value.X - targets[p.Key].X), LayoutSolver.Round(p.Value.Y - targets[p.Key].Y)));
+                changed = translations.Any(p => nextTranslations[p.Key].X != p.Value.X || nextTranslations[p.Key].Y != p.Value.Y);
+                translations = nextTranslations;
                 boxes = next;
                 if (!changed) break;
             }

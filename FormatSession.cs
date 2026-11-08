@@ -124,7 +124,8 @@ namespace HopperFormat
                 && !CanvasShortcutHook.HasReservedShortcut(_canvas, key);
                 if (!scope) return;
                 var selected = _document.SelectedObjects().ToArray();
-                eligible = selected.Length == 0 ? FormatAllCapture.EligibleCount(_document) > 0
+                eligible = selected.Length == 0 ? GroupMembership.TopLevelGroups(_document).Any(g =>
+                    (g.NickName ?? string.Empty).IndexOf("[lock]", StringComparison.OrdinalIgnoreCase) < 0)
                     : selected.Any(o => SelectionSnapshot.IsNode(o) || o is Grasshopper.Kernel.Special.GH_Group);
                 if (!eligible)
                 {
@@ -144,10 +145,19 @@ namespace HopperFormat
             if (!_firstTap.HasValue || (timestamp - _firstTap.Value) * 1000.0 / Stopwatch.Frequency
                 > Math.Max(MinimumTapWindowMilliseconds, SystemInformation.DoubleClickTime))
             {
-                _firstTap = timestamp;
-                Show(_document.SelectedObjects().Count == 0
-                    ? $"Format all groups ({FormatAllCapture.EligibleCount(_document)}) · tap F again"
-                    : $"Format selection ({_document.SelectedObjects().Count(o => SelectionSnapshot.IsNode(o) || o is Grasshopper.Kernel.Special.GH_Group)} objects) · tap F again");
+                var selected = _document.SelectedObjects();
+                if (selected.Count == 0)
+                {
+                    int count = FormatAllCapture.EligibleCount(_document);
+                    if (count == 0) { ResetTaps(); ShowPill("No groups to format"); return; }
+                    _firstTap = timestamp;
+                    ShowPill($"Format all groups ({count}) · tap F again");
+                }
+                else
+                {
+                    _firstTap = timestamp;
+                    Show($"Format selection ({selected.Count(o => SelectionSnapshot.IsNode(o) || o is Grasshopper.Kernel.Special.GH_Group)} objects) · tap F again");
+                }
                 return;
             }
             _firstTap = null;
