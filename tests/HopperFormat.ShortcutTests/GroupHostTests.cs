@@ -123,7 +123,7 @@ internal static class GroupHostTests
             c = FormatAllCapture.Capture(doc,new Options()); r = FormatAllSolver.Solve(c.Snapshot);
             Assert(!r.Layout.Success && r.Skipped == 2 && a.Attributes == null && b.Attributes == null, "membership cycle recursed into host layout");
         });
-        Check("Format-all host fractional box snapping preserves inner layout after float pivot writes", () => {
+        Check("Format-all host fractional bounds preserve whole pivot deltas with snapping attributes and reapply", () => {
             for (int seed = 0; seed < 100; seed++) {
                 var random = new Random(seed); float Fraction() => (float)random.NextDouble();
                 var f = new Fixture();
@@ -134,6 +134,14 @@ internal static class GroupHostTests
                 var label = new GH_Group { NickName = "Other label", PadTop = 20 + Fraction() }; label.ObjectIDs.Add(n.InstanceGuid);
                 f.Document.Objects.AddRange(new IGH_DocumentObject[] { n,label }); f.Document.SelectedObjects();
                 var c = FormatAllCapture.Capture(f.Document,new Options()); var r = FormatAllSolver.Solve(c.Snapshot);
+                foreach (var obj in c.Objects.Values)
+                    obj.Attributes.TransformPivot = p => new PointF((float)Math.Round(p.X),(float)Math.Round(p.Y));
+                foreach (var move in r.Layout.Moves) {
+                    var before = c.Objects[move.Id].Attributes.Pivot;
+                    double dx = move.Pivot.X - before.X, dy = move.Pivot.Y - before.Y;
+                    Assert(Math.Abs(dx - Math.Round(dx)) < 1e-6 && Math.Abs(dy - Math.Round(dy)) < 1e-6,
+                        "fractional host seed " + seed + " pivot delta=" + dx + "," + dy);
+                }
                 Assert(r.Layout.Success && FormatApplier.Apply(f.Document,r.Layout.Moves,c.Objects,out _,true,true), "first fractional run failed");
                 c = FormatAllCapture.Capture(f.Document,new Options()); r = FormatAllSolver.Solve(c.Snapshot);
                 Assert(r.Layout.Success && r.Layout.Moves.Count == 0, "fractional host seed " + seed + " second run moved: " + string.Join(";",r.Layout.Moves.Select(m => m.Id + " delta=" + (m.Pivot.X-c.Objects[m.Id].Attributes.Pivot.X) + "," + (m.Pivot.Y-c.Objects[m.Id].Attributes.Pivot.Y))));
