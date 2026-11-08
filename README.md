@@ -141,8 +141,8 @@ To build every project through the solution:
 dotnet build HopperFormat.slnx -c Release
 ```
 
-Regenerate the 24×24 plugin and Yak icons from the SVG design on Windows with
-`./tools/GenerateIcon.ps1`.
+Regenerate the plugin and Yak icons, favicon and GitHub images from
+`assets/icon.svg` on Windows with `./tools/GenerateIcon.ps1`.
 
 ## Install from Yak
 
@@ -150,7 +150,7 @@ HopperFormat is published as a beta. In Rhino 8, run `PackageManager`, tick
 **Include pre-releases**, search for `hopperformat` and install. Or close Rhino and run:
 
 ```text
-yak install hopperformat 0.1.0-beta.1
+yak install hopperformat 0.1.0-beta.2
 ```
 
 ## Install locally
@@ -159,7 +159,7 @@ Close Rhino first. From the repository root in **Git Bash on Windows**, build,
 test, package, and install locally with:
 
 ```bash
-./scripts/release-yak.sh 0.1.0-beta.1 --allow-dirty --install
+./scripts/release-yak.sh 0.1.0-beta.2 --allow-dirty --install
 ```
 
 The script replaces an already installed copy of the same version so a rebuilt
@@ -172,7 +172,7 @@ To install the built package manually from PowerShell, run this command from
 the repository root, using the artifact folder as the source:
 
 ```powershell
-& "C:\Program Files\Rhino 8\System\Yak.exe" install --source "$PWD\artifacts\yak" hopperformat 0.1.0-beta.1
+& "C:\Program Files\Rhino 8\System\Yak.exe" install --source "$PWD\artifacts\yak" hopperformat 0.1.0-beta.2
 ```
 
 Restart Rhino and open Grasshopper after installation to load the new build.
