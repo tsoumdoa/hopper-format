@@ -1,6 +1,6 @@
 # HopperFormat: format a group on demand, read it as a function
 
-Design proposal, revised 2026-11-08. Author: tomoS (aectooling). Status: phase 1 (selection-only FF) shipped in PR #1; phase 2 (groups, format all) specified in 5.9 and being built.
+Design proposal, revised 2026-11-08. Author: tomoS (aectooling). Status: phase 1 (selection-only FF) and phase 2 (groups, format all) are shipped as 0.1.0-beta.1.
 
 ## 1. Thesis
 
@@ -17,7 +17,7 @@ An explicit trigger is the whole point. A formatter that fires on its own after 
 | HopperGroup | membership | position |
 | HopperFormat | position | membership + wires |
 
-These are inverse functions. One plugin owning both would couple a drag handler to a layout solver. Keeping them apart, with one explicit handshake between them, matches how the existing plugins already compose, one concern each.
+These are inverse functions. One plugin owning both would couple a drag handler to a layout solver. Keeping them apart, with no code shared between them, matches how the existing plugins already compose, one concern each.
 
 What it borrows, and from where:
 
@@ -301,19 +301,17 @@ Sequence on the second tap:
 4. **Build one pivot undo action per moved member before writing any pivot.** Pivot actions capture the pivot at construction, so building them afterwards would record the formatted state.
 5. Write pivots, call `ExpireLayout` on each moved object, then `ExpireCaches` on every affected group so group bounds refresh.
 6. Remeasure. If any member's applied pivot is not what the solver emitted, revert every pivot and record nothing.
-7. Add the actions to the one record named `Format selection`, `Format groups` or `Format all groups`, refresh the canvas, and update the pill (for example, `Formatted groups · 11 moves`). The HopperGroup handshake is a later stage, described below.
+7. Add the actions to the one record named `Format selection`, `Format groups` or `Format all groups`, refresh the canvas, and update the pill (for example, `Formatted groups · 11 moves`).
 
-**HopperGroup handshake.** HopperGroup keeps settled positions and exit outlines from the last drop, and treats any other movement as an external move to reconcile on the next drag. That reconciliation could read a formatted member as having left its group.
+**HopperGroup.** HopperFormat only moves objects and never changes group membership. HopperGroup works out membership from position: it keeps settled positions and exit outlines from the last drop, and may treat other movement as an external move to reconcile on the next drag.
 
-The fix lives in HopperGroup and is small. When an undo record whose name starts with `Format ` is added (`Format selection`, `Format groups`, `Format all groups`), HopperGroup re-snapshots settled positions and outlines for the affected groups, exactly as its own Refresh does.
-
-Format all moves nearly every group, so this handshake ships before format all is recommended alongside HopperGroup (phase 2, stage 3). Until then, the HopperFormat README tells users to tap Refresh on HopperGroup after formatting.
+A handshake in HopperGroup was considered and is **not planned** (owner decision, 2026-11-08: formatting should not affect grouping). If it is ever needed, the right model is HopperGroup's Undo/Redo path, which accepts the current layout. Its Refresh is not, because Refresh recalculates membership from position.
 
 No background triggers exist in phase one. There is nothing to debounce, no re-entrancy to guard, and no drag to stay out of.
 
 ## 7. Coexistence
 
-- **HopperGroup**: see the handshake above. F is free in its hook, but the hook's message handler is G-specific and must be generalised to a registered key rather than copied.
+- **HopperGroup**: see section 6. F is free in its hook, but the hook's message handler is G-specific and must be generalised to a registered key rather than copied.
 - **HopperWire**: tighter groups make its length and boundary rules more meaningful. No change.
 - **HopperDraw**: annotations use absolute coordinates and are not members, so they do not move. Its pattern of snapshotting undo actions at press time is the one HopperFormat follows.
 - **hoppercode**: the agent can call the same solver in-process through a `gh_format` tool once phase one exists, replacing its size-table placement for groups it creates.
@@ -333,10 +331,9 @@ Live Rhino checklist before release: FF with HopperGroup installed, then a drag 
 ## 9. Phases
 
 1. **FF on a flat target.** Pure solver, headless tests, one-shot format with its own undo record, external hints. Shipped as the selection-only MVP (PR #1); option tags deferred.
-2. **Groups** (5.9), in three stages:
+2. **Groups** (5.9), in two stages:
    1. **FF with groups.** Groups in the selection: exclusive-ownership check, see-through label groups, bottom-up inner formatting with RigidGroup children and composed pivots, and the dataflow re-plan with box-edge alignment for several units (5.9.3).
    2. **Format all.** FF with nothing selected and the `Format all groups` menu item, plus tidy-in-place arrangement with fixed obstacles (5.9.4).
-   3. **HopperGroup handshake.** The record-name convention in HopperGroup (section 6), shipped as a HopperGroup release before format all is recommended alongside it.
    
    Later: the `gh_format` tool for hoppercode.
 3. **Optional continuous mode**, only if phase one proves the solver calm. An explicit `[flow]` tag re-runs FF after a drop inside that group, built on the handshake. `[pin]` is deferred: Grasshopper moves only the dragged object during a drag, so a rigid group needs interaction-level interception like HopperDraw's, not a re-translate on drop.
