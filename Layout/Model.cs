@@ -81,9 +81,12 @@ namespace HopperFormat.Layout
         public Vec2 Pivot { get; set; }
     }
 
+    public enum FailureKind { None, Overlap, Locked, Other }
+
     public sealed class Result
     {
         public bool Success { get; set; }
+        public FailureKind FailureKind { get; set; }
         public string Diagnostic { get; set; } = string.Empty;
         public Vec2 Anchor { get; set; }
         public IReadOnlyDictionary<Guid, Vec2> Tops { get; set; } = new Dictionary<Guid, Vec2>();
@@ -91,6 +94,9 @@ namespace HopperFormat.Layout
         public int Rounds { get; set; }
         public IReadOnlyList<Move> Moves { get; set; } = Array.Empty<Move>();
         public IReadOnlyList<string> Log { get; set; } = Array.Empty<string>();
+        // User-facing entries, carried alongside the complete debug log.
+        public IReadOnlyList<string> Notices { get; set; } = Array.Empty<string>();
+        public int DissolvedCount { get; set; }
         public IReadOnlyDictionary<Guid, int> Ranks { get; set; } = new Dictionary<Guid, int>();
         public int CrossingsBefore { get; set; }
         public int CrossingsAfter { get; set; }
