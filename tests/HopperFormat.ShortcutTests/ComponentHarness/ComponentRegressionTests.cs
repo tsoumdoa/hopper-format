@@ -55,6 +55,18 @@ public static class ComponentRegressionTests
                 && ReferenceEquals(new Component().Image, icons[0])
                 && ReferenceEquals(new HopperFormatInfo().Icon, icons[0]), "icon decoded more than once");
         });
+        Check("Component menu exposes Format all groups and routes it separately from Format selection", () =>
+        {
+            var component = new Component(); var document = new GH_Document(); component.AddedToDocument(document);
+            using var menu = new ToolStripDropDown(); component.Menu(menu);
+            Assert(menu.Items.Count == 2 && menu.Items[0].Text == "Format selection" && menu.Items[1].Text == "Format all groups"
+                && menu.Items[1].Enabled, "menu entry missing or disabled");
+            menu.Items[1].PerformClick();
+            Assert(component.Session.AllRuns == 1 && component.Session.SelectionRuns == 0, "all menu routed to selection");
+            menu.Items[0].PerformClick();
+            Assert(component.Session.SelectionRuns == 1 && component.Session.AllRuns == 1, "selection menu changed");
+            component.RemovedFromDocument(document);
+        });
         return failures;
 
         void Check(string name, Action test)
@@ -75,6 +87,7 @@ public static class ComponentRegressionTests
             .GetField("_session", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(this);
         internal void Solve(IGH_DataAccess data) => SolveInstance(data);
         internal Bitmap Image => Icon;
+        internal void Menu(ToolStripDropDown menu) => AppendAdditionalComponentMenuItems(menu);
     }
 
     private sealed class DataAccess : IGH_DataAccess
@@ -94,7 +107,9 @@ namespace HopperFormat
         internal IEnumerable<string> Log(bool debug) => Array.Empty<string>();
         internal void Guard(string where, Action action) => action();
         internal void Configure(HopperFormatComponent owner, GH_Document document, Layout.Options options) { }
-        internal void Run() { }
+        internal int SelectionRuns, AllRuns;
+        internal void Run() => SelectionRuns++;
+        internal void RunAll() => AllRuns++;
         public void Dispose() { }
     }
 
@@ -143,7 +158,8 @@ namespace Grasshopper.Kernel
         protected abstract void RegisterOutputParams(GH_OutputParamManager manager);
         protected abstract void SolveInstance(IGH_DataAccess data);
         protected virtual void AppendAdditionalComponentMenuItems(ToolStripDropDown menu) { }
-        protected static void Menu_AppendItem(ToolStripDropDown menu, string text, EventHandler handler, bool enabled) { }
+        protected static void Menu_AppendItem(ToolStripDropDown menu, string text, EventHandler handler, bool enabled) =>
+            menu.Items.Add(new ToolStripMenuItem(text, null, handler) { Enabled = enabled });
         protected abstract Bitmap Icon { get; }
         public abstract Guid ComponentGuid { get; }
         public sealed class GH_InputParamManager

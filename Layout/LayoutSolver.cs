@@ -105,6 +105,7 @@ namespace HopperFormat.Layout
                 {
                     result.Unstable = true;
                     log.Add("Unstable: layout did not settle within three rounds.");
+                    result.Notices = new[] { log[log.Count - 1] };
                     break;
                 }
             }

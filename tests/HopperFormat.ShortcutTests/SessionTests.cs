@@ -18,6 +18,46 @@ internal static class SessionTests
 
     internal static int Run(Form form)
     {
+        Check(form, "Flat overlapping selection formats normally and records Format selection", f =>
+        {
+            var extraA = new TestComponent(); var extraB = new TestComponent();
+            var a = new GH_Group { NickName = "Unrelated A" }; var b = new GH_Group { NickName = "Unrelated B" };
+            a.ObjectIDs.AddRange(new[] { f.First.InstanceGuid,extraA.InstanceGuid });
+            b.ObjectIDs.AddRange(new[] { f.First.InstanceGuid,extraB.InstanceGuid });
+            f.Document.Objects.AddRange(new IGH_DocumentObject[] { extraA,extraB,a,b });
+            Tap(f.Canvas); Tap(f.Canvas);
+            Assert(f.Session.Status.StartsWith("Formatted selection") && f.Session.LastMoves > 0
+                && f.Document.UndoUtil.Records.Single().Name == "Format selection" && extraA.Attributes == null && extraB.Attributes == null,
+                "flat selection was refused by unrelated ownership");
+        });
+        Check(form, "Selected group instability warning remains visible without Debug", f =>
+        {
+            var group = new GH_Group { NickName = "Selected group", Document = f.Document };
+            group.ObjectIDs.AddRange(new[] { f.First.InstanceGuid,f.Second.InstanceGuid });
+            f.Document.Objects.Add(group); f.Document.Selection.Clear(); f.Document.Selection.Add(group);
+            f.Unstable = true; f.Session.Run();
+            const string warning = "'Selected group': Unstable: layout did not settle within three rounds.";
+            Assert(f.Session.LastMoves > 0 && f.Session.Status.EndsWith(" (not fully settled, FF again may adjust)")
+                && f.Session.Log(false).Contains(warning) && f.Session.Log(true).Count(l => l == warning) == 1,"prefixed warning hidden or duplicated");
+        });
+        Check(form, "Held zero-count F runs membership preflight once until key-up", f =>
+        {
+            var a = new GH_Group(); var b = new GH_Group();
+            a.ObjectIDs.AddRange(new[] { f.First.InstanceGuid,f.Second.InstanceGuid });
+            b.ObjectIDs.AddRange(new[] { f.First.InstanceGuid,f.Second.InstanceGuid });
+            f.Document.Objects.AddRange(new[] { a,b }); f.Document.Selection.Clear();
+            a.ObjectIDReads = b.ObjectIDReads = 0;
+            Assert(FormatAllCapture.EligibleCount(f.Document) == 0,"zero-count setup");
+            int readsA = a.ObjectIDReads, readsB = b.ObjectIDReads;
+            a.ObjectIDReads = b.ObjectIDReads = 0;
+            var dispatch = typeof(FormatSession).GetMethod("Dispatch",System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            for (int i = 0; i < 12; i++) dispatch.Invoke(f.Session,new object[] { Keys.F,true });
+            Assert(a.ObjectIDReads == readsA && b.ObjectIDReads == readsB && PillText(f) == "No groups to format","held F repeated count");
+            dispatch.Invoke(f.Session,new object[] { Keys.F,false });
+            dispatch.Invoke(f.Session,new object[] { Keys.F,true });
+            Assert(a.ObjectIDReads == 2 * readsA && b.ObjectIDReads == 2 * readsB,"key-up did not release count guard");
+            dispatch.Invoke(f.Session,new object[] { Keys.F,false });
+        });
         Check(form, "Session FF previews selection then runs once and refreshes outputs", f =>
         {
             Tap(f.Canvas);
@@ -59,9 +99,22 @@ internal static class SessionTests
             var locked = new GH_Group { NickName = "Protected [LOCK]" }; locked.ObjectIDs.Add(child.InstanceGuid);
             f.Document.Objects.AddRange(new[] { child, locked });
             f.Session.Run();
-            Assert(f.Session.Status.Contains("Protected [LOCK]") && f.Session.LastMoves == 0
+            Assert(f.Session.Status == "'Protected [LOCK]': Selection belongs to locked group" && f.Session.LastMoves == 0
                 && f.Document.UndoUtil.Creates == 0 && f.First.Attributes.Pivot == f.First.InitialPivot
                 && f.Second.Attributes.Pivot == f.Second.InitialPivot, "locked selection moved or did not name the group");
+        });
+        Check(form, "Session FF selection refusal describes a default group once and never lays out its membership cycle", f =>
+        {
+            f.First.NickName = "A";
+            var group = new GH_Group { NickName = "Group" };
+            group.ObjectIDs.AddRange(new[] { group.InstanceGuid, f.First.InstanceGuid });
+            group.CreateAttributes(); group.Attributes.Bounds = new RectangleF(120, 340, 100, 80);
+            f.Document.Objects.Add(group); f.Document.Selection.Clear(); f.Document.Selection.Add(group);
+            Tap(f.Canvas); Tap(f.Canvas);
+            const string diagnostic = "group [A] at (120, 340): group membership cycle";
+            Assert(f.Session.Status == diagnostic && f.Session.Log(false).Count(l => l == diagnostic) == 1
+                && group.Attributes.Layouts == 0 && f.Document.UndoUtil.Creates == 0 && f.Session.LastMoves == 0,
+                "FF refusal lost the group description or invoked recursive layout: " + f.Session.Status);
         });
         Check(form, "Session empty-selection F preserves last run outputs and schedules no refresh", f =>
         {
@@ -81,6 +134,119 @@ internal static class SessionTests
                 && f.Session.Log(false).SequenceEqual(log) && f.Session.Log(true).SequenceEqual(debugLog)
                 && f.Owner.OutputRefreshes == refreshes && f.ForwardedDown == 1
                 && f.Document.UndoUtil.Records.Count == count, "empty-selection keydown/keyup changed outputs, scheduled a refresh or captured F");
+        });
+        Check(form, "Session empty-selection FF previews eligible groups, then formats all once with skipped count", f =>
+        {
+            var group = new GH_Group { NickName = "Pipeline", Document = f.Document };
+            group.ObjectIDs.AddRange(new[] { f.First.InstanceGuid,f.Second.InstanceGuid }); f.Document.Objects.Add(group);
+            var lockedNode = new TestComponent { InitialPivot = new PointF(900,900) };
+            var locked = new GH_Group { NickName = "Fixed [lock]", Document = f.Document }; locked.ObjectIDs.Add(lockedNode.InstanceGuid);
+            f.Document.Objects.AddRange(new IGH_DocumentObject[] { lockedNode,locked,f.Owner });
+            f.Document.Selection.Clear();
+            var refreshes = f.Owner.OutputRefreshes;
+            Tap(f.Canvas);
+            Assert(PillText(f) == "Format all groups (1) · tap F again" && f.Document.UndoUtil.Creates == 0
+                && f.First.Attributes == null && f.Owner.OutputRefreshes == refreshes, "all preview counted/measured/applied incorrectly");
+            Tap(f.Canvas);
+            Assert(f.Session.Status.StartsWith("Formatted all groups · ") && f.Session.Status.EndsWith(" (1 skipped)")
+                && f.Document.UndoUtil.Records.Single().Name == "Format all groups" && f.Session.LastMoves > 0
+                && f.Session.Log(false).Contains("Skipped 'Fixed [lock]': Selection belongs to locked group (fixed)") && f.ForwardedDown == 0,
+                "all FF failed: " + f.Session.Status);
+            Assert(lockedNode.Attributes.Pivot == lockedNode.InitialPivot && f.Owner.Attributes.Pivot == f.Owner.InitialPivot, "fixed objects moved");
+        });
+        Check(form, "Session empty-selection eligibility performs no ownership walk or output refresh", f =>
+        {
+            var child = new GH_Group(); child.ObjectIDs.Add(f.First.InstanceGuid);
+            var root = new GH_Group(); root.ObjectIDs.Add(child.InstanceGuid);
+            var locked = new GH_Group { NickName = "Fixed [LOCK]" }; locked.ObjectIDs.Add(f.Second.InstanceGuid);
+            f.Document.Objects.AddRange(new[] { root,child,locked }); f.Document.Selection.Clear();
+            root.ObjectIDReads = child.ObjectIDReads = locked.ObjectIDReads = 0;
+            var status = f.Session.Status; var log = f.Session.Log(true).ToArray(); var refreshes = f.Owner.OutputRefreshes;
+            var method = typeof(FormatSession).GetMethod("CanCaptureShortcut", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            for (int i = 0; i < 6; i++) Assert((bool)method.Invoke(f.Session,new object[] { Keys.F }), "cheap eligibility rejected root");
+            // TopLevelGroups reads each membership list once per call; ownership
+            // preflight would read root/child lists again to descend and ascend.
+            Assert(root.ObjectIDReads == 6 && child.ObjectIDReads == 6 && locked.ObjectIDReads == 6,
+                "eligibility walked ownership: " + root.ObjectIDReads + "," + child.ObjectIDReads + "," + locked.ObjectIDReads);
+            Assert(f.Session.Status == status && f.Session.LastMoves == 0 && f.Session.Log(true).SequenceEqual(log)
+                && f.Owner.OutputRefreshes == refreshes && f.First.Attributes == null && f.Document.UndoUtil.Creates == 0, "eligibility changed output state");
+        });
+        Check(form, "Session first format-all tap counts eligible roots once and preserves previous outputs", f =>
+        {
+            f.Session.Run();
+            var root = new GH_Group(); root.ObjectIDs.AddRange(new[] { f.First.InstanceGuid,f.Second.InstanceGuid });
+            var nested = new GH_Group(); nested.ObjectIDs.Add(f.First.InstanceGuid); root.ObjectIDs.Add(nested.InstanceGuid);
+            var other = new GH_Group();
+            var locked = new GH_Group { NickName = "[lock]" };
+            f.Document.Objects.AddRange(new[] { root,nested,other,locked }); f.Document.Selection.Clear();
+            var groups = new[] { root,nested,other,locked };
+            foreach (var g in groups) g.ObjectIDReads = 0;
+            Assert(FormatAllCapture.EligibleCount(f.Document) == 2,"preflight fixture count");
+            var expected = groups.Select(g => g.ObjectIDReads).ToArray();
+            foreach (var g in groups) g.ObjectIDReads = 0;
+            var status = f.Session.Status; var moves = f.Session.LastMoves; var log = f.Session.Log(true).ToArray();
+            var refreshes = f.Owner.OutputRefreshes; var undos = f.Document.UndoUtil.Creates;
+            var dispatch = typeof(FormatSession).GetMethod("Dispatch", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            dispatch.Invoke(f.Session,new object[] { Keys.F,true });
+            dispatch.Invoke(f.Session,new object[] { Keys.F,true }); // repeat is ignored
+            dispatch.Invoke(f.Session,new object[] { Keys.F,false });
+            Assert(PillText(f) == "Format all groups (2) · tap F again" && groups.Select(g => g.ObjectIDReads).SequenceEqual(expected),
+                "first tap counted preflight more than once or counted nested/locked groups");
+            Assert(f.Session.Status == status && f.Session.LastMoves == moves && f.Session.Log(true).SequenceEqual(log)
+                && f.Owner.OutputRefreshes == refreshes && f.Document.UndoUtil.Creates == undos,"first tap changed prior outputs");
+        });
+        Check(form, "Session format-all Log exposes skipped and dissolved counts without Debug", f =>
+        {
+            var third = new TestComponent { NickName = "Third", InitialPivot = new PointF(90,90) };
+            var child = new GH_Group { NickName = "Re-entered child", Document = f.Document };
+            child.ObjectIDs.AddRange(new[] { f.First.InstanceGuid,f.Second.InstanceGuid });
+            var root = new GH_Group { NickName = "Root", Document = f.Document }; root.ObjectIDs.AddRange(new[] { child.InstanceGuid,third.InstanceGuid });
+            var lockedNode = new TestComponent(); var locked = new GH_Group { NickName = "Fixed [lock]", Document = f.Document }; locked.ObjectIDs.Add(lockedNode.InstanceGuid);
+            TestParam.Connect(f.First.Params.Output[0],third.Params.Input[0]);
+            TestParam.Connect(third.Params.Output[0],f.Second.Params.Input[0]);
+            f.Document.Objects.AddRange(new IGH_DocumentObject[] { third,child,root,lockedNode,locked });
+            f.Session.RunAll();
+            Assert(f.Session.Status.Contains("1 skipped") && f.Session.Log(false).Any(l => l.Contains("1 skipped, 1 dissolved"))
+                && f.Session.Log(false).Contains("'Re-entered child' was laid out with 'Root': its wires leave and re-enter it"),"counts or dissolution hidden in Debug");
+        });
+        Check(form, "Session only skipped groups show No groups to format and never arm a second tap", f =>
+        {
+            f.Session.Run();
+            var a = new GH_Group(); var b = new GH_Group();
+            a.ObjectIDs.AddRange(new[] { f.First.InstanceGuid, f.Second.InstanceGuid }); b.ObjectIDs.AddRange(new[] { f.First.InstanceGuid, f.Second.InstanceGuid });
+            f.Document.Objects.AddRange(new[] { a,b }); f.Document.Selection.Clear();
+            var status = f.Session.Status; var moves = f.Session.LastMoves; var log = f.Session.Log(true).ToArray();
+            var refreshes = f.Owner.OutputRefreshes; var undos = f.Document.UndoUtil.Creates;
+            for (int i = 0; i < 3; i++) {
+                Tap(f.Canvas);
+                var first = typeof(FormatSession).GetField("_firstTap",System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                Assert(PillText(f) == "No groups to format" && first.GetValue(f.Session) == null,"zero-count tap was armed");
+            }
+            Assert(f.Session.Status == status && f.Session.LastMoves == moves && f.Session.Log(true).SequenceEqual(log)
+                && f.Owner.OutputRefreshes == refreshes && f.Document.UndoUtil.Creates == undos,"zero-count tap changed prior outputs");
+        });
+        Check(form, "Session Format all groups menu runs with or without selection and no-op records nothing", f =>
+        {
+            var group = new GH_Group { NickName = "Pipeline", Document = f.Document };
+            group.ObjectIDs.AddRange(new[] { f.First.InstanceGuid,f.Second.InstanceGuid }); f.Document.Objects.Add(group);
+            f.Session.RunAll();
+            Assert(f.Document.UndoUtil.Records.Single().Name == "Format all groups" && f.Session.LastMoves > 0, "selected menu failed");
+            f.Document.Selection.Clear(); f.Session.RunAll();
+            Assert(f.Session.Status == "Formatted all groups · 0 moves" && f.Session.LastMoves == 0
+                && f.Document.UndoUtil.Records.Count == 1, "empty menu not fixed");
+        });
+        Check(form, "Session empty selection with only locked groups gives hint only and passes F through", f =>
+        {
+            var group = new GH_Group { NickName = "[lock]", Document = f.Document }; group.ObjectIDs.Add(f.First.InstanceGuid);
+            f.Document.Objects.Add(group); f.Document.Selection.Clear();
+            var status = f.Session.Status; var log = f.Session.Log(true).ToArray(); var refreshes = f.Owner.OutputRefreshes;
+            Tap(f.Canvas);
+            var text = typeof(FeedbackPill).GetField("_text", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            Assert((string)text.GetValue(f.Pill) == "No groups to format" && f.Session.Status == status && f.Session.LastMoves == 0
+                && f.Session.Log(true).SequenceEqual(log) && f.Owner.OutputRefreshes == refreshes && f.ForwardedDown == 1
+                && f.First.Attributes == null && f.Document.UndoUtil.Creates == 0
+                && typeof(FormatSession).GetField("_firstTap",System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(f.Session) == null,
+                "ineligible all check had side effects or armed a tap");
         });
         Check(form, "Session pill factory failure keeps hook handlers and menu formatting working", f =>
         {
@@ -215,6 +381,9 @@ internal static class SessionTests
         return _failures;
     }
 
+    private static string PillText(Fixture f) => (string)typeof(FeedbackPill).GetField("_text",
+        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(f.Pill);
+
     private static void Tap(Control canvas)
     {
         long data = 1L | ((long)MapVirtualKey((uint)Keys.F, 0) << 16);
@@ -263,7 +432,18 @@ internal static class SessionTests
                 if (Unstable)
                 {
                     result.Unstable = true;
-                    result.Log = result.Log.Concat(new[] { "Unstable: layout did not settle within three rounds." }).ToArray();
+                    result.Notices = new[] { "Unstable: layout did not settle within three rounds." };
+                    result.Log = result.Log.Concat(result.Notices).ToArray();
+                }
+                return result;
+            }, snapshot =>
+            {
+                var result = HierarchySolver.Solve(snapshot);
+                if (Unstable)
+                {
+                    result.Unstable = true;
+                    result.Notices = new[] { "'Selected group': Unstable: layout did not settle within three rounds." };
+                    result.Log = result.Log.Concat(result.Notices).ToArray();
                 }
                 return result;
             });

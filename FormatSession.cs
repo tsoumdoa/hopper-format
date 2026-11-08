@@ -21,6 +21,7 @@ namespace HopperFormat
         private bool _pillDisabled;
         private readonly Func<GH_Canvas, Action<string, Action>, FeedbackPill> _pillFactory;
         private readonly Func<Snapshot, Result> _solve;
+        private readonly Func<HierarchySnapshot, Result> _solveHierarchy;
         private bool _trackingCanvas, _running, _keyDown;
         private long? _firstTap;
         private Options _options = new Options();
@@ -32,10 +33,11 @@ namespace HopperFormat
         internal IEnumerable<string> Log(bool debug) => debug ? _log.Concat(_detail) : _log;
 
         internal FormatSession(Func<GH_Canvas, Action<string, Action>, FeedbackPill> pillFactory = null,
-            Func<Snapshot, Result> solve = null)
+            Func<Snapshot, Result> solve = null, Func<HierarchySnapshot, Result> solveHierarchy = null)
         {
             _pillFactory = pillFactory ?? ((canvas, guard) => new FeedbackPill(canvas, guard));
             _solve = solve ?? LayoutSolver.Solve;
+            _solveHierarchy = solveHierarchy ?? HierarchySolver.Solve;
         }
 
         internal void Configure(HopperFormatComponent owner, GH_Document document, Options options) => Guard("Configure", () =>
@@ -123,12 +125,14 @@ namespace HopperFormat
                 && GH_Canvas.NavigationZoomIn != key && GH_Canvas.NavigationZoomOut != key
                 && !CanvasShortcutHook.HasReservedShortcut(_canvas, key);
                 if (!scope) return;
-                var selected = _document.SelectedObjects();
-                eligible = selected.Any(o => SelectionSnapshot.IsNode(o) || o is Grasshopper.Kernel.Special.GH_Group);
+                var selected = _document.SelectedObjects().ToArray();
+                eligible = selected.Length == 0 ? GroupMembership.TopLevelGroups(_document).Any(g =>
+                    (g.NickName ?? string.Empty).IndexOf("[lock]", StringComparison.OrdinalIgnoreCase) < 0)
+                    : selected.Any(o => SelectionSnapshot.IsNode(o) || o is Grasshopper.Kernel.Special.GH_Group);
                 if (!eligible)
                 {
                     // Hint only: eligibility checks must preserve the last run's outputs.
-                    ShowPill("Select components to format");
+                    ShowPill(selected.Length == 0 ? "No groups to format" : "Select components to format");
                 }
             });
             return eligible;
@@ -143,15 +147,29 @@ namespace HopperFormat
             if (!_firstTap.HasValue || (timestamp - _firstTap.Value) * 1000.0 / Stopwatch.Frequency
                 > Math.Max(MinimumTapWindowMilliseconds, SystemInformation.DoubleClickTime))
             {
-                _firstTap = timestamp;
-                Show($"Format selection ({_document.SelectedObjects().Count(o => SelectionSnapshot.IsNode(o) || o is Grasshopper.Kernel.Special.GH_Group)} objects) · tap F again");
+                var selected = _document.SelectedObjects();
+                if (selected.Count == 0)
+                {
+                    int count = FormatAllCapture.EligibleCount(_document);
+                    if (count == 0) { _firstTap = null; ShowPill("No groups to format"); return; }
+                    _firstTap = timestamp;
+                    ShowPill($"Format all groups ({count}) · tap F again");
+                }
+                else
+                {
+                    _firstTap = timestamp;
+                    Show($"Format selection ({selected.Count(o => SelectionSnapshot.IsNode(o) || o is Grasshopper.Kernel.Special.GH_Group)} objects) · tap F again");
+                }
                 return;
             }
             _firstTap = null;
-            Run();
+            if (_document.SelectedObjects().Count == 0) RunAll(); else Run();
         });
 
-        internal void Run() => Guard("Format selection", () =>
+        internal void Run() => Run(false);
+        internal void RunAll() => Run(true);
+
+        private void Run(bool formatAll) => Guard(formatAll ? "Format all groups" : "Format selection", () =>
         {
             ResetTaps();
             if (_running) return;
@@ -169,19 +187,39 @@ namespace HopperFormat
             _detail.Clear();
             try
             {
+                if (formatAll)
+                {
+                    var all = FormatAllCapture.Capture(_document, _options);
+                    _log.AddRange(all.Log);
+                    var outcome = FormatAllSolver.Solve(all.Snapshot);
+                    var layout = outcome.Layout;
+                    foreach (var line in layout.Log)
+                        if (layout.Notices.Contains(line)) _log.Add(line);
+                        else _detail.Add(line);
+                    if (!layout.Success) { Finish(layout.Diagnostic); return; }
+                    bool applied = FormatApplier.Apply(_document, layout.Moves, all.Objects, out var allStatus, true, true, all.Membership);
+                    if (applied)
+                    {
+                        LastMoves = layout.Moves.Count;
+                        if (outcome.Skipped > 0) allStatus += $" ({outcome.Skipped} skipped)";
+                        if (layout.Unstable) allStatus += " (not fully settled, FF again may adjust)";
+                    }
+                    Finish(allStatus);
+                    return;
+                }
                 var capture = SelectionSnapshot.Capture(_document, _options);
                 // Skips are always visible. Debug additionally includes solver details.
                 _log.AddRange(capture.Skipped);
                 if (capture.Diagnostic != null) { Finish(capture.Diagnostic); return; }
-                var locked = GroupMembership.LockedDiagnostic(_document, capture.CandidateIds);
+                var locked = capture.Membership.LockedDiagnostic(capture.CandidateIds);
                 if (locked != null) { Finish(locked); return; }
                 if (capture.Objects.Count == 0) { Finish("Select components to format"); return; }
-                var result = capture.Hierarchy == null ? _solve(capture.Snapshot) : HierarchySolver.Solve(capture.Hierarchy);
+                var result = capture.Hierarchy == null ? _solve(capture.Snapshot) : _solveHierarchy(capture.Hierarchy);
                 foreach (var line in result.Log)
-                    if (result.Unstable && line.StartsWith("Unstable:", StringComparison.Ordinal)) _log.Add(line);
+                    if (result.Notices.Contains(line)) _log.Add(line);
                     else _detail.Add(line);
                 if (!result.Success) { Finish(result.Diagnostic); return; }
-                var success = FormatApplier.Apply(_document, result.Moves, capture.Objects, out var status, capture.ContainsGroups);
+                var success = FormatApplier.Apply(_document, result.Moves, capture.Objects, out var status, capture.ContainsGroups, membership: capture.Membership);
                 if (success) LastMoves = result.Moves.Count;
                 if (success && result.Unstable) status += " (not fully settled, FF again may adjust)";
                 Finish(status);

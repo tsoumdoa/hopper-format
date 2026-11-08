@@ -30,7 +30,7 @@ What it borrows, and from where:
 
 ### The FF gesture
 
-Tap F twice with the canvas focused. Same hook, timing window, and feedback pill as GG and DD. **The target is exactly the selection.** FF never resolves to an enclosing group, never uses the group under the cursor, and never formats the whole document.
+Tap F twice with the canvas focused. Same hook, timing window, and feedback pill as GG and DD. With a selection, **the target is exactly the selection.** FF never resolves to an enclosing group or uses the group under the cursor. With nothing selected, it formats all top-level groups and leaves ungrouped objects fixed.
 
 - Selected components and floating params are laid out as one function (phase one).
 - Each selected group has its contents formatted bottom-up; two or more selected units (groups or loose nodes) are then arranged by dataflow (5.9).
@@ -42,7 +42,7 @@ The pill names the target after the first tap, for example `Format selection (14
 
 With **nothing selected**, FF formats every group in the document (5.9.4): each group's contents are formatted, then the groups are tidied in place. Ungrouped objects never move.
 
-- **Gesture:** the same F double-tap, timing window and pill as FF. The first tap names the target before anything moves, e.g. `Format all groups (12) · tap F again`. With no formattable group, the pill says `No groups to format`.
+- **Gesture:** the same F double-tap, timing window and pill as FF. The first tap names the target before anything moves, e.g. `Format all groups (12) · tap F again`; the count excludes locked groups and groups rejected by the read-only ownership preflight; other inner failures remain eligible for rigid tidy. F passes through to the host when the document has no unlocked top-level group; the pill says `No groups to format`. In the rare case where every unlocked top-level group turns out to be unformattable, the first tap is consumed and the pill says `No groups to format`. This hint leaves Status, Moves and Log unchanged and schedules no output refresh.
 - **Undo:** one record named `Format all groups`, reverted by a single Undo.
 - **Menu:** the component menu offers the same action as `Format all groups`, whatever is selected.
 - **Hook change:** the F registration now also captures F when the selection is empty. This replaces the earlier F-then-G idea. That idea needed two-key sequences in the shared hook, and clashed with HopperGroup's G whenever something was selected.
@@ -211,7 +211,8 @@ Phase one formats one flat selection. Phase two adds groups at two levels. **Ins
 
 - Membership comes from `GH_Group.ObjectIDs`. A group's **direct members** are its nodes, plus its child groups as single units; a child group's own members are not direct members.
 - A **label group** contains exactly one node, transitively. Example: `TitleBlockRange` wrapping one param. Label groups are **see-through**: their node counts as a direct member of the parent, and the label box follows it because Grasshopper derives group bounds from members. This keeps every phase-one golden layout unchanged when its params are labelled.
-- **Ownership must be exclusive.** A node in two groups that are not nested in each other has no single correct layout. FF on a selection refuses with a diagnostic naming the node; format all skips that top-level group and reports it.
+- **Ownership must be exclusive between multi-node groups.** A node in two multi-node groups that are not nested in each other has no single correct layout. FF on a selection refuses with a diagnostic naming the node; format all skips both roots and keeps them fixed. Overlap involving a label group is allowed, including a label around a node in a non-nested larger group: the label follows its node and never creates a second layout owner.
+- Nested layout problems do not refuse their root. Empty nested groups (including groups containing only empty groups) are ignored; a child whose contraction introduces a cycle is dissolved for layout as described below. Nodes with empty bounds are excluded and reported without skipping the group. Locks, real overlapping membership and malformed geometry still refuse inner formatting.
 - `[lock]` groups are never formatted and never moved. In format all they stay put as obstacles.
 
 #### 5.9.2 Inside groups (bottom-up)
@@ -224,7 +225,7 @@ Groups are processed in post-order: children before parents.
    - It has one **input port** per member receiving a wire from outside the child, at that member's input-grip y relative to the child box top.
    - It has one **output port** per member sending a wire out of the child, at that member's output-grip y.
    - Wires stay port-level, as in phase one.
-3. Contract each child to one node and check the contracted graph for cycles. `a1 → b → a2`, with `a1` and `a2` in child A and `b` outside it, contracts to a cycle. It is refused (selection) or skipped (format all) with a diagnostic.
+3. Contract each child to one node and check the contracted graph for cycles. `a1 → b → a2`, with `a1` and `a2` in child A and `b` outside it, contracts to a cycle. Dissolve the child for layout: its members join the parent level directly, while its visible box continues to follow its original members. Log `Group '<child>' was laid out with '<parent>': its wires leave and re-enter it`. Choose participating children deterministically by depth, then id; re-check after each dissolution and dissolve further children if necessary. This applies both to a selected group and to format all. Empty descendants do not become layout units or require a measurable envelope.
 4. Group attributes have no writable pivot. A group moves by moving each of its descendants. All inner moves and outer translations are composed into **one final pivot per descendant** before anything is written, and recorded in one undo record (section 6).
 
 #### 5.9.3 Arranging groups with FF: dataflow re-plan
@@ -243,20 +244,27 @@ Used when FF's selection holds two or more top-level units, where a unit is a gr
 
 #### 5.9.4 Arranging groups with format all: tidy in place
 
-Format all (FF with nothing selected) targets every top-level group in the document. It keeps each group roughly where the user put it.
+Format all (FF with nothing selected, or the `Format all groups` menu item with any selection) targets every top-level group: a group not contained in another group. Top-level label groups are targets too; their visible boxes take part in tidy unless they label a node already owned by another target. Such overlapping labels follow that node rather than competing as independent boxes. Set `GX = GroupGapX = 50` and `GY = GroupGapY = 40`.
 
-1. Format every target group's contents (5.9.2), each anchored at its own top-left.
-2. **Rows.** Sort groups by top. A group joins the current row when its top is within `RowSnap` of the row's top; `RowSnap = min(GroupGapY, 0.25 × the shorter height)`. Every group in a row takes the row's smallest top, so box edges line up.
-3. **Columns.** Across rows, left edges within `GroupGapX / 2` of each other snap to their smallest value.
-4. **Gaps.**
-   - Within a row, in left-to-right order, a gap smaller than `2 × GroupGapX` becomes exactly `GroupGapX`, pushing later groups right. Larger gaps are intentional separation and are kept.
-   - Rows are handled the same way top to bottom with `GroupGapY`; a row moves as a whole.
-5. **Obstacles.** Ungrouped objects, `[lock]` groups and skipped groups **never move**; they are fixed rectangles. If a group would overlap one, push it right within its row (or push its row down) until it clears by the group gap.
+First format each target independently as a single-group selection (5.9.2), anchored on its own units envelope, with the same note rules. Do not run the dataflow arrangement between roots. Each formatted visible group box, including measured padding, becomes its tidy box. A group whose inner formatting fails is skipped and logged with its reason, but still participates in tidy as a rigid box: its contents translate together without rearrangement. The precise fixed obstacles are ungrouped objects (components, params, scribbles, markup and HopperFormat itself), `[lock]` groups, and groups sharing members through real non-nested multi-node ownership conflicts. Moving a conflicting group would drag another group's members, so both stay fixed. Nested contraction cycles dissolve and empty nested groups or empty-bounds nodes do not skip a root. Continue with all movable boxes, including rigid skipped roots; report no groups to format only when none has a movable measurable outline.
+
+Run these deterministic tidy steps:
+
+1. **Rows.** Sort target boxes by `(top, left, id)`. Greedily open a row with the first box. A box joins the current row when `|top − rowTop| <= min(GY, 0.25 × min(box height, height of the row's first box))`; otherwise open another row. A row whose tops span less than `1 - 1e-7` canvas units already counts as aligned, so snapping leaves every member put. Otherwise, use the member with the smallest Guid as a stable representative: it stays put during snapping, and each other member takes the whole-unit `Round` translation toward its top. The resulting tops span less than one unit.
+2. **Columns.** Sort all target lefts ascending. Greedily cluster lefts within `GX / 2` of the current cluster's smallest left. A cluster whose lefts span less than `1 - 1e-7` canvas units already counts as aligned, so snapping leaves every member put. Otherwise, use the member with the smallest Guid as a stable representative and apply whole-unit `Round` translations toward its left. Snapped edges count as aligned within one unit; a snap only moves groups in a row or cluster whose edges differ by one unit or more (with the same `1e-7` comparison epsilon). The representative rule keeps the snap reference stable when gap evening and collision pushes interact over several passes.
+3. **Placement in reading order.** Process rows top to bottom and members left to right (id breaks ties). The placed set `P` starts with all obstacles.
+   - **Vertical, per row.** Start at the current smallest row top `t`. For each member `m`, find maximum bottom `a` among items in `P` that overlap its snapped horizontal extent and have `top < t`. With none, `t_m = t`. Otherwise, `t_m = a + GY` when `t − a < 2·GY`, or `t_m = t` for larger gaps. The requested row top is `max(t_m)`. When this changes the row top, convert it for each member to a whole-unit translation from that member's starting box using `Ceiling(requestedTop - startingTop - 1e-7)`; otherwise retain its snapped top. Small evened vertical gaps land in `[GY, GY + 1)` where the other members allow it, and larger gaps stay.
+   - **Horizontal, per member of the same row only.** Start at snapped left `x`. Only earlier members of this snapped row may even a horizontal gap or push this member right. Find their maximum right `b`; when `x − b < 2·GX`, request `x = b + GX` and apply `Ceiling(x - startingLeft - 1e-7)`. This includes both gap evening and collision pushes, with resulting gaps in `[GX, GX + 1)`. Fixed obstacles and groups in other rows never push a member right.
+   - **Downward clearance, per whole row.** After horizontal placement, compare every member with all fixed obstacles and already placed rows. Whenever both horizontal clearance is below GX and vertical clearance is below GY, push the entire row down until its colliding members are below those boxes with GY clearance. Use the largest required whole-unit `Ceiling(... - 1e-7)` translation, recompute every member and repeat until clear. This includes obstacles below a member that it grew into. Growth into a later row pushes that later row down when it is placed. Keep each row together and retain column snapping, so a vertical stack stays left-aligned. Exact GX or GY clearance is permitted with the `1e-7` comparison epsilon. Add the completed row to `P`.
+4. **Loop.** Repeat steps 1–3 from the resulting boxes until no whole-unit translation changes, at most five passes. If the fifth pass still moves anything, keep that result and log `Unstable: format-all tidy did not settle within five passes; kept the last result.`
+5. **Move direction.** Except for snapping (at most GX/2 horizontally or the row snap vertically) and gap evening (a gap under 2× becomes a gap in `[G, G + 1)`), only same-row neighbours can move right; collisions with everything else move the row down.
+
+Compose each root's final translation with its inner formatting into one pivot per descendant. Non-node members follow as in stage 1, and every nested group box receives the same outer translation. Every tidy translation is a whole number of canvas units measured from the group's starting box, preserving every descendant's pivot lattice. Each independent inner solve is simply the hierarchy solve in 5.9.2; no fractional pivot frame is introduced. Ignore pivot differences within two host `PointF` ULPs, allowing for the float arithmetic used to remeasure group bounds. Apply once with the verified undo/rollback protocol in section 6. Status and pill read `Formatted all groups · N moves`, with `(K skipped)` when applicable; Log always includes skipped and dissolved counts and each dissolution line, without requiring Debug. A no-op creates no undo record.
 
 #### 5.9.5 Guarantees for groups
 
-- **Idempotent:** FF on a selection or format all on a freshly formatted result moves nothing, at both levels. The geometric fixed-point recognition of 5.8 extends to RigidGroup nodes and to the tidy pass. Snapped edges and gaps of exactly `GroupGapX`/`GroupGapY` are stable.
-- **Deterministic and non-overlapping:** among group boxes, and between groups and obstacles.
+- **Idempotent:** FF on a selection or format all on a freshly formatted result moves nothing, at both levels. The geometric fixed-point recognition of 5.8 extends to RigidGroup nodes and to the tidy pass. Edges spanning less than one unit count as aligned; evened gaps in `[GroupGapX, GroupGapX + 1)` and `[GroupGapY, GroupGapY + 1)` are stable (using the `1e-7` comparison epsilon).
+- **Deterministic and non-overlapping:** among independent layout boxes, and between movable boxes and fixed obstacles. Labels and dissolved group boxes may overlap other boxes because they follow their members.
 - **Non-targets untouched:** FF on a selection moves only selected units and their descendants; format all moves only members of target groups.
 - **Phase-one layouts unchanged:** a flat selection, or a group whose only nested groups are label groups, lays out exactly as in phase one.
 
@@ -293,7 +301,7 @@ Sequence on the second tap:
 4. **Build one pivot undo action per moved member before writing any pivot.** Pivot actions capture the pivot at construction, so building them afterwards would record the formatted state.
 5. Write pivots, call `ExpireLayout` on each moved object, then `ExpireCaches` on every affected group so group bounds refresh.
 6. Remeasure. If any member's applied pivot is not what the solver emitted, revert every pivot and record nothing.
-7. Add the actions to the one record named `Format selection` or `Format groups`, refresh the canvas, and update the pill (for example, `Formatted groups · 11 moves`). The HopperGroup handshake is a later stage, described below.
+7. Add the actions to the one record named `Format selection`, `Format groups` or `Format all groups`, refresh the canvas, and update the pill (for example, `Formatted groups · 11 moves`). The HopperGroup handshake is a later stage, described below.
 
 **HopperGroup handshake.** HopperGroup keeps settled positions and exit outlines from the last drop, and treats any other movement as an external move to reconcile on the next drag. That reconciliation could read a formatted member as having left its group.
 

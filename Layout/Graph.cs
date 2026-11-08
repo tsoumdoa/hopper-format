@@ -24,6 +24,7 @@ namespace HopperFormat.Layout
         }
 
         internal static bool Finite(double value) { return !double.IsNaN(value) && !double.IsInfinity(value); }
+        private static string MessageLabel(Node node) => node.Kind == NodeKind.Group ? node.Label : "'" + node.Label + "'";
         private static bool Finite(Vec2 value) { return Finite(value.X) && Finite(value.Y); }
 
         internal static bool TryCreate(Snapshot snapshot, out Graph graph, out string diagnostic)
@@ -48,10 +49,10 @@ namespace HopperFormat.Layout
             foreach (var node in nodes)
             {
                 if (!Finite(node.Width) || !Finite(node.Height) || node.Width <= 0 || node.Height <= 0)
-                    return Fail("Non-positive or non-finite size for '" + node.Label + "'.", out diagnostic);
+                    return Fail("Non-positive or non-finite size for " + MessageLabel(node) + ".", out diagnostic);
                 if (!Finite(node.CurrentTop) || !Finite(node.PivotOffset) || node.Inputs == null || node.Outputs == null ||
                     node.Inputs.Any(p => !Finite(p)) || node.Outputs.Any(p => !Finite(p)))
-                    return Fail("Invalid coordinates or grips for '" + node.Label + "'.", out diagnostic);
+                    return Fail("Invalid coordinates or grips for " + MessageLabel(node) + ".", out diagnostic);
             }
             var byId = nodes.ToDictionary(n => n.Id);
             var edges = snapshot.Edges.OrderBy(e => e.From).ThenBy(e => e.FromPort)
@@ -62,19 +63,19 @@ namespace HopperFormat.Layout
                     return Fail("An internal edge refers to a missing node.", out diagnostic);
                 if (edge.FromPort < 0 || edge.FromPort >= byId[edge.From].Outputs.Length ||
                     edge.ToPort < 0 || edge.ToPort >= byId[edge.To].Inputs.Length)
-                    return Fail("Bad port index between '" + byId[edge.From].Label + "' and '" + byId[edge.To].Label + "'.", out diagnostic);
+                    return Fail("Bad port index between " + MessageLabel(byId[edge.From]) + " and " + MessageLabel(byId[edge.To]) + ".", out diagnostic);
             }
             foreach (var external in snapshot.Inbound.OrderBy(e => e.Node).ThenBy(e => e.Port).ThenBy(e => e.SourceGripY))
             {
                 if (!byId.ContainsKey(external.Node)) return Fail("An external inbound refers to a missing node.", out diagnostic);
                 if (external.Port < 0 || external.Port >= byId[external.Node].Inputs.Length || !Finite(external.SourceGripY))
-                    return Fail("Bad external input port or grip for '" + byId[external.Node].Label + "'.", out diagnostic);
+                    return Fail("Bad external input port or grip for " + MessageLabel(byId[external.Node]) + ".", out diagnostic);
             }
             foreach (var external in snapshot.Outbound.OrderBy(e => e.Node).ThenBy(e => e.Port).ThenBy(e => e.TargetGripY))
             {
                 if (!byId.ContainsKey(external.Node)) return Fail("An external outbound refers to a missing node.", out diagnostic);
                 if (external.Port < 0 || external.Port >= byId[external.Node].Outputs.Length || !Finite(external.TargetGripY))
-                    return Fail("Bad external output port or grip for '" + byId[external.Node].Label + "'.", out diagnostic);
+                    return Fail("Bad external output port or grip for " + MessageLabel(byId[external.Node]) + ".", out diagnostic);
             }
             var g = new Graph { Nodes = nodes, Edges = edges, Snapshot = snapshot, Options = options, ById = byId,
                 In = nodes.ToDictionary(n => n.Id, n => new List<Edge>()),
@@ -96,7 +97,7 @@ namespace HopperFormat.Layout
                     var edge = g.Out[frame.Key][frame.Value];
                     stack.Push(new KeyValuePair<Guid, int>(frame.Key, frame.Value + 1));
                     if (colors[edge.To] == 1)
-                        return Fail("Cycle between '" + byId[edge.From].Label + "' and '" + byId[edge.To].Label + "'.", out diagnostic);
+                        return Fail("Cycle between " + MessageLabel(byId[edge.From]) + " and " + MessageLabel(byId[edge.To]) + ".", out diagnostic);
                     if (colors[edge.To] == 0)
                     {
                         colors[edge.To] = 1;

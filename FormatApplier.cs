@@ -10,15 +10,15 @@ namespace HopperFormat
     internal static class FormatApplier
     {
         internal static bool Apply(GH_Document document, IReadOnlyList<Move> moves,
-            IReadOnlyDictionary<Guid, IGH_DocumentObject> objects, out string status, bool containsGroups = false)
+            IReadOnlyDictionary<Guid, IGH_DocumentObject> objects, out string status, bool containsGroups = false, bool formatAll = false, GroupMembership.Index membership = null)
         {
-            status = "Already formatted";
+            status = formatAll ? "Formatted all groups · 0 moves" : "Already formatted";
             if (moves.Count == 0) return true;
             var movedObjects = moves.Select(move => objects[move.Id]).ToArray();
             var originals = movedObjects.ToDictionary(obj => obj, obj => obj.Attributes.Pivot);
-            var groups = GroupMembership.Ancestors(document, moves.Select(move => move.Id));
+            var groups = (membership ?? new GroupMembership.Index(document)).Ancestors(moves.Select(move => move.Id));
             // Pivot undo actions snapshot their positions in their constructors.
-            var record = document.UndoUtil.CreatePivotEvent(containsGroups ? "Format groups" : "Format selection", movedObjects);
+            var record = document.UndoUtil.CreatePivotEvent(formatAll ? "Format all groups" : containsGroups ? "Format groups" : "Format selection", movedObjects);
             try
             {
                 foreach (var move in moves)
@@ -48,7 +48,7 @@ namespace HopperFormat
                 Grasshopper.Instances.RedrawCanvas();
                 return false;
             }
-            status = $"Formatted {(containsGroups ? "groups" : "selection")} · {moves.Count} moves";
+            status = $"Formatted {(formatAll ? "all groups" : containsGroups ? "groups" : "selection")} · {moves.Count} moves";
             Grasshopper.Instances.RedrawCanvas();
             return true;
         }

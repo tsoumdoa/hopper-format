@@ -163,7 +163,9 @@ namespace Grasshopper.Kernel.Special
 
     internal sealed class GH_Group : Grasshopper.Kernel.TestObject
     {
-        internal readonly List<Guid> ObjectIDs = new List<Guid>();
+        private readonly List<Guid> _objectIDs = new List<Guid>();
+        internal int ObjectIDReads;
+        internal List<Guid> ObjectIDs { get { ObjectIDReads++; return _objectIDs; } }
         internal int CacheExpirations;
         internal Grasshopper.Kernel.GH_Document Document;
         internal float PadLeft = 10, PadTop = 20, PadRight = 12, PadBottom = 14;

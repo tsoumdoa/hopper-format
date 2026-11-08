@@ -13,7 +13,7 @@ internal static class HierarchyTests
     private static Edge E(Node a, Node b, int input = 0, int output = 0) => new Edge {
         From = a.Id, To = b.Id, FromPort = output, ToPort = input };
     private static HierarchyGroup G(int id, Node[] nodes, params HierarchyGroup[] children) => new HierarchyGroup {
-        Id = Id(id), Label = "G" + id, Nodes = nodes, Children = children, Padding = new Padding(10, 20, 12, 14) };
+        Id = Id(id), Label = "'G" + id + "'", Nodes = nodes, Children = children, Padding = new Padding(10, 20, 12, 14) };
     private static IEnumerable<Node> Nodes(HierarchyGroup g) => g.Nodes.Concat(g.Children.SelectMany(Nodes)).GroupBy(n => n.Id).Select(a => a.First());
     private static IEnumerable<HierarchyGroup> Groups(HierarchyGroup g) => new[] { g }.Concat(g.Children.SelectMany(Groups));
     private static void Assert(bool ok, string message) { if (!ok) throw new Exception(message); }
@@ -190,6 +190,52 @@ internal static class HierarchyTests
             Refused(new HierarchySnapshot { Groups = new[] { locked } }, "locked");
             Refused(new HierarchySnapshot { Groups = new[] { G(100, new[] { a, c }) }, LooseNodes = new[] { b }, Edges = new[] { E(a, b), E(b, c) } }, "Cycle");
         });
+        Check("Hierarchy contracted nested child dissolves, labels overlap and empty children are ignored", () => {
+            var a = N(1, 30, 60); var b = N(2, 100, 90); var c = N(3, 180, 70);
+            var child = G(101, new[] { a,c }, G(103, Array.Empty<Node>()));
+            var root = G(100, new[] { b }, child, G(104, Array.Empty<Node>()));
+            var label = G(102, new[] { a });
+            var s = new HierarchySnapshot { Groups = new[] { root,label }, Edges = new[] { E(a,b),E(b,c) } };
+            var r = Solve(s);
+            Assert(r.Log.Contains("'G101' was laid out with 'G100': its wires leave and re-enter it"), "missing dissolve line");
+            Assert(!r.GroupBoxes.ContainsKey(Id(103)) && !r.GroupBoxes.ContainsKey(Id(104)), "empty boxes became layout units");
+            Assert(r.Tops[a.Id].X < r.Tops[b.Id].X && r.Tops[b.Id].X < r.Tops[c.Id].X, "parent was not laid out directly");
+            Assert(r.GroupBoxes[label.Id].X == r.Tops[a.Id].X - label.Padding.Left, "overlapping label did not follow node");
+            Stable(s,r); WholeUnitMoves(s,r);
+        });
+        Check("Hierarchy rechecks after each dissolution in depth and id order", () => {
+            var n = Enumerable.Range(1,5).Select(i => N(i,20*i,30*i)).ToArray();
+            var root = G(100,Array.Empty<Node>(),G(102,new[] { n[1],n[3] }),G(101,new[] { n[0],n[2],n[4] }));
+            var s = new HierarchySnapshot { Groups = new[] { root }, Edges = Enumerable.Range(0,4).Select(i => E(n[i],n[i+1])).ToArray() };
+            var r = Solve(s);
+            Assert(r.Log.Where(l => l.Contains("its wires leave and re-enter it")).SequenceEqual(new[] {
+                "'G101' was laid out with 'G100': its wires leave and re-enter it",
+                "'G102' was laid out with 'G100': its wires leave and re-enter it" }),"did not recheck or used unstable dissolve order");
+            Stable(s,r); WholeUnitMoves(s,r);
+        });
+        Check("Hierarchy empty-bounds nodes are excluded and reported without refusing their group", () => {
+            var a = N(1, 30, 60); var bad = N(2, 100, 90, 0); var b = N(3, 180, 70);
+            var root = G(100, new[] { a,b }, G(101, new[] { bad }));
+            var r = Solve(new HierarchySnapshot { Groups = new[] { root }, Edges = new[] { E(a,bad),E(bad,b) } });
+            Assert(!r.Tops.ContainsKey(bad.Id) && r.Tops.Count == 2 && r.Log.Any(l => l.Contains("empty bounds")), "excluded node skipped its root");
+            var malformed = N(4); malformed.Width = double.NaN;
+            Assert(!HierarchySolver.Solve(new HierarchySnapshot { Groups = new[] { G(102,new[] { malformed }) } }).Success, "malformed geometry accepted");
+        });
+        Check("Random hierarchy recovery: 300 seeds, contracted children, label overlaps and empty descendants", () => {
+            for (int seed = 0; seed < 300; seed++) {
+                var random = new Random(seed);
+                var a = N(1,random.Next(200),random.Next(200)); var b = N(2,random.Next(200),random.Next(200)); var c = N(3,random.Next(200),random.Next(200));
+                var root = G(100,new[] { b },G(101,new[] { a,c },G(103,Array.Empty<Node>())),G(104,new[] { a }));
+                var s = new HierarchySnapshot { Groups = new[] { root }, Edges = new[] { E(a,b),E(b,c) } };
+                var r = Solve(s); Stable(s,r); WholeUnitMoves(s,r);
+                Assert(r.Log.Count(l => l.Contains("its wires leave and re-enter it")) == 1,"seed " + seed + " dissolve count");
+                var shuffled = Applied(s,new Result { Tops = new[] { a,b,c }.ToDictionary(n => n.Id,n => n.CurrentTop) },random);
+                var other = Solve(shuffled);
+                Assert(Fingerprint(r) == Fingerprint(other) && r.Log.SequenceEqual(other.Log),"seed " + seed + " nondeterministic recovery");
+                var nodes = new[] { a,b,c }.Select(n => Placed(n,r)).ToArray();
+                for (int i = 0; i < nodes.Length; i++) for (int j = i + 1; j < nodes.Length; j++) Assert(!Overlap(nodes[i],nodes[j]),"recovery overlapped nodes");
+            }
+        });
         Check("Rigid groups left-align group-only columns, use group row gaps and reserve no long lanes", () => {
             var a = N(1, 0, 0, 110); var b = N(2, 100, 200, 70); var c = N(3, 200, 60); var d = N(4, 400, 0);
             foreach (var n in new[] { a, b, c, d }) n.Kind = NodeKind.Group;
@@ -227,7 +273,7 @@ internal static class HierarchyTests
                     Assert(r.Moves.Select(m => m.Id).SequenceEqual(r.Moves.Select(m => m.Id).Distinct().OrderBy(id => id)), "move order or duplicate");
                     Stable(s, r); Geometry(s, r); NotesClear(s, r);
                     Assert(Fingerprint(r) == Fingerprint(Solve(s)), "repeat differs");
-                    var initial = new Result { Tops = s.Groups.SelectMany(Nodes).Concat(s.LooseNodes).ToDictionary(n => n.Id, n => n.CurrentTop) };
+                    var initial = new Result { Tops = s.Groups.SelectMany(Nodes).Concat(s.LooseNodes).GroupBy(n => n.Id).Select(g => g.First()).ToDictionary(n => n.Id, n => n.CurrentTop) };
                     var allTops = initial.Tops.ToDictionary(p => p.Key, p => p.Value);
                     foreach (var m in s.Groups.SelectMany(Groups).SelectMany(g => g.NonNodes)) allTops[m.Id] = new Vec2(m.Bounds.X, m.Bounds.Y);
                     initial.Tops = allTops;
@@ -252,7 +298,7 @@ internal static class HierarchyTests
     private static Box Placed(Node n, Result r) => new Box(r.Tops[n.Id].X, r.Tops[n.Id].Y, n.Width, n.Height);
     private static void WholeUnitMoves(HierarchySnapshot s, Result r)
     {
-        var pivots = s.Groups.SelectMany(Nodes).Concat(s.LooseNodes).ToDictionary(n => n.Id,
+        var pivots = s.Groups.SelectMany(Nodes).Concat(s.LooseNodes).GroupBy(n => n.Id).Select(g => g.First()).ToDictionary(n => n.Id,
             n => new Vec2(n.CurrentTop.X + n.PivotOffset.X, n.CurrentTop.Y + n.PivotOffset.Y));
         foreach (var n in s.Groups.SelectMany(Groups).SelectMany(g => g.NonNodes))
             pivots[n.Id] = new Vec2(n.Bounds.X + n.PivotOffset.X, n.Bounds.Y + n.PivotOffset.Y);
