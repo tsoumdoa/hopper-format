@@ -59,9 +59,22 @@ internal static class SessionTests
             var locked = new GH_Group { NickName = "Protected [LOCK]" }; locked.ObjectIDs.Add(child.InstanceGuid);
             f.Document.Objects.AddRange(new[] { child, locked });
             f.Session.Run();
-            Assert(f.Session.Status.Contains("Protected [LOCK]") && f.Session.LastMoves == 0
+            Assert(f.Session.Status == "'Protected [LOCK]': Selection belongs to locked group" && f.Session.LastMoves == 0
                 && f.Document.UndoUtil.Creates == 0 && f.First.Attributes.Pivot == f.First.InitialPivot
                 && f.Second.Attributes.Pivot == f.Second.InitialPivot, "locked selection moved or did not name the group");
+        });
+        Check(form, "Session FF selection refusal describes a default group once and never lays out its membership cycle", f =>
+        {
+            f.First.NickName = "A";
+            var group = new GH_Group { NickName = "Group" };
+            group.ObjectIDs.AddRange(new[] { group.InstanceGuid, f.First.InstanceGuid });
+            group.CreateAttributes(); group.Attributes.Bounds = new RectangleF(120, 340, 100, 80);
+            f.Document.Objects.Add(group); f.Document.Selection.Clear(); f.Document.Selection.Add(group);
+            Tap(f.Canvas); Tap(f.Canvas);
+            const string diagnostic = "group [A] at (120, 340): group membership cycle";
+            Assert(f.Session.Status == diagnostic && f.Session.Log(false).Count(l => l == diagnostic) == 1
+                && group.Attributes.Layouts == 0 && f.Document.UndoUtil.Creates == 0 && f.Session.LastMoves == 0,
+                "FF refusal lost the group description or invoked recursive layout: " + f.Session.Status);
         });
         Check(form, "Session empty-selection F preserves last run outputs and schedules no refresh", f =>
         {
@@ -97,7 +110,7 @@ internal static class SessionTests
             Tap(f.Canvas);
             Assert(f.Session.Status.StartsWith("Formatted all groups · ") && f.Session.Status.EndsWith(" (1 skipped)")
                 && f.Document.UndoUtil.Records.Single().Name == "Format all groups" && f.Session.LastMoves > 0
-                && f.Session.Log(false).Any(l => l.Contains("Skipped group 'Fixed [lock]'")) && f.ForwardedDown == 0,
+                && f.Session.Log(false).Contains("Skipped 'Fixed [lock]': Selection belongs to locked group (fixed)") && f.ForwardedDown == 0,
                 "all FF failed: " + f.Session.Status);
             Assert(lockedNode.Attributes.Pivot == lockedNode.InitialPivot && f.Owner.Attributes.Pivot == f.Owner.InitialPivot, "fixed objects moved");
         });
@@ -154,7 +167,7 @@ internal static class SessionTests
             f.Document.Objects.AddRange(new IGH_DocumentObject[] { third,child,root,lockedNode,locked });
             f.Session.RunAll();
             Assert(f.Session.Status.Contains("1 skipped") && f.Session.Log(false).Any(l => l.Contains("1 skipped, 1 dissolved"))
-                && f.Session.Log(false).Contains("Group 'Re-entered child' was laid out with 'Root': its wires leave and re-enter it"),"counts or dissolution hidden in Debug");
+                && f.Session.Log(false).Contains("'Re-entered child' was laid out with 'Root': its wires leave and re-enter it"),"counts or dissolution hidden in Debug");
         });
         Check(form, "Session only skipped groups show No groups to format and never arm a second tap", f =>
         {

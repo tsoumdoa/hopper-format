@@ -40,6 +40,20 @@ internal static class FormatAllTests
     {
         int failures = 0;
         void Check(string name, Action test) { try { test(); Console.WriteLine("PASS " + name); } catch (Exception e) { failures++; Console.WriteLine("FAIL " + name + ": " + e.Message); } }
+        Check("Format-all skipped diagnostics consume complete group descriptions and include root context once", () => {
+            const string label = "group [A, B, C, …] at (120, 340)";
+            var root = new HierarchyGroup { Id = Id(1), Label = label, Nodes = new[] { TestNode(100, 130, 360) }, Padding = new Padding(-1, 0, 0, 0) };
+            var target = new FormatAllTarget { Id = root.Id, Label = label, Bounds = new Box(120, 340, 100, 80),
+                Hierarchy = new HierarchySnapshot { Groups = new[] { root } } };
+            var result = FormatAllSolver.Solve(new FormatAllSnapshot { Targets = new[] { target } });
+            Assert(result.Layout.Log.Contains("Skipped " + label + ": invalid padding. (moves rigidly)"), "root context repeated or requoted");
+            target.Label = root.Label = "'Name'";
+            result = FormatAllSolver.Solve(new FormatAllSnapshot { Targets = new[] { target } });
+            Assert(result.Layout.Log.Contains("Skipped 'Name': invalid padding. (moves rigidly)"), "custom description was requoted");
+            root.Padding = default; root.Nodes = Array.Empty<Node>(); target.Label = root.Label = "empty group at (120, 340)";
+            result = FormatAllSolver.Solve(new FormatAllSnapshot { Targets = new[] { target } });
+            Assert(result.Layout.Log.Contains("Skipped empty group at (120, 340): no measurable members (moves rigidly)"), "empty group phrasing repeated");
+        });
         Check("Format all overlap/edge snap: A=(0,0), B=(250,0), C=(0,160), D=(250,120)", () => {
             var r = Tidy(new[] { new Box(0,0,200,120), new Box(260,10,120,80), new Box(20,180,100,80), new Box(250,70,160,150) });
             At(r,1,0,0); At(r,2,250,0); At(r,3,0,160); At(r,4,250,120); Assert(!r.Unstable, Coordinates(r));

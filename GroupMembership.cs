@@ -71,7 +71,7 @@ namespace HopperFormat
                 g => new HashSet<Guid>(Ancestors(document, new[] { g.InstanceGuid }).Select(a => a.InstanceGuid)));
             foreach (var group in relevant)
                 if (ancestors[group.InstanceGuid].Contains(group.InstanceGuid))
-                    return $"Group membership cycle at '{SelectionSnapshot.Label(group)}'";
+                    return $"{SelectionSnapshot.DescribeGroup(document, group)}: group membership cycle";
             var objects = document.Objects.ToDictionary(o => o.InstanceGuid);
             bool LabelGroup(GH_Group g) => Descendants(document, g).Count(id => objects.TryGetValue(id, out var obj) && SelectionSnapshot.IsNode(obj)) == 1;
             foreach (var obj in document.Objects.Where(o => targets.Contains(o.InstanceGuid))
@@ -83,7 +83,9 @@ namespace HopperFormat
                         if (!LabelGroup(owners[i]) && !LabelGroup(owners[j]) &&
                             !ancestors[owners[i].InstanceGuid].Contains(owners[j].InstanceGuid) &&
                             !ancestors[owners[j].InstanceGuid].Contains(owners[i].InstanceGuid))
-                            return $"Overlapping membership for '{SelectionSnapshot.Label(obj)}'";
+                            return obj is GH_Group group
+                                ? $"{SelectionSnapshot.DescribeGroup(document, group)}: Overlapping membership"
+                                : $"Overlapping membership for '{SelectionSnapshot.Label(obj)}'";
             }
             return null;
         }
@@ -94,7 +96,7 @@ namespace HopperFormat
             var locked = Ancestors(document, selected).Concat(document.Objects.OfType<GH_Group>()
                 .Where(group => selected.Contains(group.InstanceGuid))).FirstOrDefault(group =>
                 (group.NickName ?? string.Empty).IndexOf("[lock]", StringComparison.OrdinalIgnoreCase) >= 0);
-            return locked == null ? null : $"Selection belongs to locked group '{locked.NickName}'";
+            return locked == null ? null : $"{SelectionSnapshot.DescribeGroup(document, locked)}: Selection belongs to locked group";
         }
     }
 }

@@ -14,6 +14,65 @@ internal static class GroupHostTests
     { try { test(); Console.WriteLine("PASS " + name); } catch (Exception e) { failures++; Console.WriteLine("FAIL " + name + ": " + e.Message); } }
     internal static int Run()
     {
+        Check("Default group description orders descendant nodes by top, left and id and truncates after three", () => {
+            var doc = new GH_Document();
+            var a = new TestComponent { NickName = "A", InitialPivot = new PointF(10, 0), Offset = PointF.Empty };
+            var b = new TestComponent { NickName = "B", InitialPivot = new PointF(20, 0), Offset = PointF.Empty };
+            var tied = new[] { new TestComponent(), new TestComponent() }.OrderBy(n => n.InstanceGuid).ToArray();
+            tied[0].NickName = ""; tied[0].Name = "C"; tied[1].NickName = "D";
+            foreach (var n in tied) { n.InitialPivot = new PointF(0, 10); n.Offset = PointF.Empty; }
+            var child = new GH_Group { NickName = "Nested" }; child.ObjectIDs.AddRange(new[] { b.InstanceGuid, a.InstanceGuid });
+            var group = new GH_Group { NickName = "Group", Document = doc };
+            var note = new TestObject { NickName = "Do not list notes" };
+            group.ObjectIDs.AddRange(new[] { tied[1].InstanceGuid, child.InstanceGuid, note.InstanceGuid, tied[0].InstanceGuid, a.InstanceGuid, Guid.NewGuid() });
+            doc.Objects.AddRange(new IGH_DocumentObject[] { group, tied[1], b, child, note, a, tied[0] });
+            foreach (var n in new[] { a, b }.Concat(tied)) { n.CreateAttributes(); n.Attributes.PerformLayout(); }
+            group.CreateAttributes(); group.Attributes.Bounds = new RectangleF(120.4f, 339.6f, 400, 200);
+            Assert(SelectionSnapshot.DescribeGroup(doc, group) == "group [A, B, C, …] at (120, 340)", "default description or ordering incorrect");
+            group.ObjectIDs.Reverse(); doc.Objects.Reverse();
+            Assert(SelectionSnapshot.DescribeGroup(doc, group) == "group [A, B, C, …] at (120, 340)"
+                && group.Attributes.Layouts == 0 && child.Attributes == null && note.Attributes == null
+                && new[] { a, b }.Concat(tied).All(n => n.Attributes.Layouts == 1), "description depends on enumeration or invokes layout");
+            group.Document = child.Document = doc;
+            var selected = SelectionSnapshot.Capture(doc, new Options(), new[] { group });
+            var label = SelectionSnapshot.DescribeGroup(doc, group);
+            Assert(selected.Hierarchy.Groups.Single().Label == label
+                && FormatAllCapture.Capture(doc, new Options()).Snapshot.Targets.Single().Label == label, "host did not pass the description through solver labels");
+        });
+        Check("Custom group description preserves quoted nickname and treats only exact Group as default", () => {
+            var doc = new GH_Document(); var group = new GH_Group { NickName = "Name" };
+            Assert(SelectionSnapshot.DescribeGroup(doc, group) == "'Name'" && group.Attributes == null, "custom nickname changed or invoked layout");
+            group.NickName = "group";
+            Assert(SelectionSnapshot.DescribeGroup(doc, group) == "'group'", "default comparison ignored case");
+            group.NickName = " Group ";
+            Assert(SelectionSnapshot.DescribeGroup(doc, group) == "' Group '", "custom nickname was trimmed");
+            group.NickName = " "; group.Name = "Group";
+            Assert(SelectionSnapshot.DescribeGroup(doc, group) == "empty group", "blank nickname did not use default description");
+        });
+        Check("Empty group description includes rounded existing bounds and omits unavailable bounds", () => {
+            var doc = new GH_Document(); var group = new GH_Group { NickName = "Group" };
+            var note = new TestObject { NickName = "Notes" }; group.ObjectIDs.Add(note.InstanceGuid); doc.Objects.Add(note);
+            Assert(SelectionSnapshot.DescribeGroup(doc, group) == "empty group" && note.Attributes == null, "unmeasured empty group description incorrect");
+            group.CreateAttributes(); group.Attributes.Bounds = new RectangleF(-12.6f, 34.6f, 80, 40);
+            Assert(SelectionSnapshot.DescribeGroup(doc, group) == "empty group at (-13, 35)" && group.Attributes.Layouts == 0, "empty group bounds incorrect");
+            group.Attributes.Bounds = RectangleF.Empty;
+            Assert(SelectionSnapshot.DescribeGroup(doc, group) == "empty group", "empty rectangle reported as bounds");
+        });
+        Check("Group ownership diagnostics and skipped cycles use the description once without recursive layout", () => {
+            var doc = new GH_Document(); var group = new GH_Group { NickName = "Group" }; group.ObjectIDs.Add(group.InstanceGuid); doc.Objects.Add(group);
+            Assert(GroupMembership.OwnershipDiagnostic(doc, new[] { group.InstanceGuid }) == "empty group: group membership cycle", "cycle did not describe its group");
+            var all = FormatAllCapture.Capture(doc, new Options());
+            var result = FormatAllSolver.Solve(all.Snapshot);
+            Assert(result.Layout.Log.Contains("Skipped empty group: group membership cycle (no measurable outline)") && group.Attributes == null,
+                "cycle repeated group context or invoked layout: " + string.Join("; ", result.Layout.Log));
+            var member = new GH_Group { NickName = "Group" };
+            var owners = new[] { new GH_Group { NickName = "Owner A" }, new GH_Group { NickName = "Owner B" } };
+            doc.Objects.Clear(); doc.Objects.Add(member);
+            foreach (var owner in owners) { owner.ObjectIDs.Add(member.InstanceGuid); doc.Objects.Add(owner); }
+            Assert(GroupMembership.OwnershipDiagnostic(doc, new[] { member.InstanceGuid }) == "empty group: Overlapping membership", "overlapping group kept its raw nickname");
+            owners[0].NickName = "Protected [lock]";
+            Assert(GroupMembership.LockedDiagnostic(doc, new[] { member.InstanceGuid }) == "'Protected [lock]': Selection belongs to locked group", "locked group description incorrect");
+        });
         Check("Group snapshot measures direct units, labels, asymmetric padding and non-node members", () => {
             var f = new Fixture(); var capture = SelectionSnapshot.Capture(f.Document, new Options());
             Assert(capture.Diagnostic == null && capture.ContainsGroups && capture.Hierarchy.Groups.Count == 1, capture.Diagnostic);
@@ -159,7 +218,7 @@ internal static class GroupHostTests
             badNode.Attributes.OnLayout = () => throw new InvalidOperationException("injected inner layout failure");
             var c = FormatAllCapture.Capture(doc,new Options()); var r = FormatAllSolver.Solve(c.Snapshot);
             Assert(r.Layout.Success && r.Formatted == 1 && r.Skipped == 1
-                && r.Layout.Log.Any(l => l.Contains("Skipped group 'Failed'") && l.Contains("injected inner layout failure")), "inner failure stopped other groups");
+                && r.Layout.Log.Contains("Skipped 'Failed': injected inner layout failure (moves rigidly)"), "inner failure stopped other groups");
             var target = c.Snapshot.Targets.Single(t => t.Id == bad.InstanceGuid);
             var rigid = r.Layout.GroupBoxes[bad.InstanceGuid];
             Assert(!target.Fixed && r.Layout.Tops.ContainsKey(badNode.InstanceGuid) && c.Objects.ContainsKey(badNode.InstanceGuid)
