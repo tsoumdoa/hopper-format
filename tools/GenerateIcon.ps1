@@ -111,7 +111,7 @@ function Write-SocialPreview([string]$destination) {
     $matrix = [System.Drawing.Drawing2D.Matrix]::new()
     try {
         $title = 'HopperFormat'
-        $tagline = 'Left-to-right dataflow layouts for Grasshopper'
+        $tagline = 'A sane way to format Grasshopper'
         $graphics = $canvas.Graphics
         $graphics.Clear($tileColor)
         $graphics.TextRenderingHint = 'AntiAlias'
