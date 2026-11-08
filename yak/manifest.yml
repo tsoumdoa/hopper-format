@@ -1,12 +1,13 @@
 ---
 name: hopperformat
-version: 0.1.0
+version: 0.1.0-beta.1
 authors:
   - aectooling by tomoS
 description: >
-  Format selected Grasshopper components and floating parameters as a
-  left-to-right dataflow with a double tap of F or the component menu.
-  Selection only, with locked-group protection and one undo record per run.
+  HopperFormat (beta) lays out Grasshopper selections and groups as a
+  left-to-right dataflow. Tap F twice to format the selection, including nested
+  groups, or tap F twice with nothing selected to format and tidy every group.
+  It only moves objects, never changes group membership, and each run is one undo.
 url: https://github.com/tsoumdoa/hopper-format
 icon: icon.png
 keywords:

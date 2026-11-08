@@ -77,8 +77,10 @@ The component's
 every unlocked top-level group turns out to be unformattable, the first tap is
 consumed and the pill says `No groups to format`. One Undo restores the entire format-all run.
 
-After formatting groups managed by **HopperGroup**, tap **Refresh** on HopperGroup
-before dragging members. Its automatic handshake is coming in a later stage.
+HopperFormat only moves objects; it never changes group membership. If you also use
+**HopperGroup**, which works out membership from position, it may re-evaluate moved
+objects the next time you drag something. Pressing HopperGroup's **Refresh** is not
+needed after formatting: Refresh recalculates membership from position.
 
 ## Component
 
@@ -113,9 +115,6 @@ normal behavior. Both F taps are consumed; a held key does not count as two taps
   **.NET Core**, and restart Rhino.
 - The **FF shortcut is Windows-only**. The **Format selection and Format all groups menu items work
   everywhere** Grasshopper runs on .NET 8.
-- After formatting members of groups managed by **HopperGroup**, tap **Refresh**
-  on HopperGroup before continuing to drag members. The automatic handshake is
-  coming in a later stage.
 
 ## Build and test
 
@@ -145,13 +144,22 @@ dotnet build HopperFormat.slnx -c Release
 Regenerate the 24×24 plugin and Yak icons from the SVG design on Windows with
 `./tools/GenerateIcon.ps1`.
 
+## Install from Yak
+
+HopperFormat is published as a beta. In Rhino 8, run `PackageManager`, tick
+**Include pre-releases**, search for `hopperformat` and install. Or close Rhino and run:
+
+```text
+yak install hopperformat 0.1.0-beta.1
+```
+
 ## Install locally
 
 Close Rhino first. From the repository root in **Git Bash on Windows**, build,
 test, package, and install locally with:
 
 ```bash
-./scripts/release-yak.sh 0.1.0 --allow-dirty --install
+./scripts/release-yak.sh 0.1.0-beta.1 --allow-dirty --install
 ```
 
 The script replaces an already installed copy of the same version so a rebuilt
@@ -164,7 +172,7 @@ To install the built package manually from PowerShell, run this command from
 the repository root, using the artifact folder as the source:
 
 ```powershell
-& "C:\Program Files\Rhino 8\System\Yak.exe" install --source "$PWD\artifacts\yak" hopperformat 0.1.0
+& "C:\Program Files\Rhino 8\System\Yak.exe" install --source "$PWD\artifacts\yak" hopperformat 0.1.0-beta.1
 ```
 
 Restart Rhino and open Grasshopper after installation to load the new build.
