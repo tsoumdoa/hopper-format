@@ -235,8 +235,8 @@ namespace HopperFormat.Layout
                     SolveLevel(units, new Vec2(before.X, before.Y), g.Label);
                     var after = Envelope(direct.Where(nodes.ContainsKey).Select(ObjectBox)
                         .Concat(children.Select(c => boxes[c.Id])));
-                    double growthX = Math.Max(0, after.Right - before.Right),
-                        growthY = Math.Max(0, after.Bottom - before.Bottom);
+                    double growthX = Math.Max(0, Math.Ceiling(after.Right - before.Right - 1e-7)),
+                        growthY = Math.Max(0, Math.Ceiling(after.Bottom - before.Bottom - 1e-7));
                     foreach (var id in PhysicalIds(g).Where(nonNodes.ContainsKey).OrderBy(id => id))
                     {
                         var note = ObjectBox(id);

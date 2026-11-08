@@ -104,6 +104,21 @@ internal static class HierarchyTests
             Near(r.Tops[note.Id].X, 30, "below note x"); Near(r.Tops[note.Id].Y, 110 + growth, "below note y");
             Stable(s, r); Geometry(s, r); NotesClear(s, r);
         });
+        Check("Hierarchy fractional growth of 37.4 moves the note below by exactly 38 whole units", () => {
+            var a = N(1, 29.75, 59.75); var b = N(2, 29.35, 70.15, 80, 21);
+            a.PivotOffset = new Vec2(7.25, 9.25); b.PivotOffset = new Vec2(7.65, 9.85);
+            var g = G(100, new[] { a, b });
+            var note = new NonNodeMember { Id = Id(300), Label = "Below fractional growth",
+                Bounds = new Box(29.35, 99.75, 60, 25), PivotOffset = new Vec2(3.25, 8.5) };
+            g.NonNodes = new[] { note };
+            var s = new HierarchySnapshot { Groups = new[] { g } }; var r = Solve(s);
+            Near(new[] { a, b }.Max(n => Placed(n, r).Bottom) - 99.75, 37.4, "fractional growth");
+            Golden(r, (1, 29.75, 59.75), (2, 29.35, 116.15), (300, 29.35, 137.75));
+            var move = r.Moves.Single(m => m.Id == note.Id);
+            Near(move.Pivot.X - (note.Bounds.X + note.PivotOffset.X), 0, "note pivot delta x");
+            Near(move.Pivot.Y - (note.Bounds.Y + note.PivotOffset.Y), 38, "note pivot delta y");
+            WholeUnitMoves(s, r); Stable(s, r); Geometry(s, r); NotesClear(s, r);
+        });
         Check("Hierarchy note right of components follows rightward growth and is idempotent", () => {
             var a = N(1, 30, 60); var b = N(2, 40, 70);
             var g = G(100, new[] { a, b });
@@ -218,6 +233,16 @@ internal static class HierarchyTests
                     initial.Tops = allTops;
                     Assert(Fingerprint(r) == Fingerprint(Solve(Applied(s, initial, new Random(seed + 9999)))), "shuffle differs");
                     Assert(r.Moves.All(m => allTops.ContainsKey(m.Id)) && r.Tops.Count == allTops.Count, "non-target moved");
+                    // Preserve the original fractional-pivot fixtures above. Whole-unit
+                    // deltas assume node pivots start on the canvas's whole-unit grid.
+                    var integralTops = new Dictionary<Guid, Vec2>(allTops);
+                    foreach (var n in s.Groups.SelectMany(Nodes).Concat(s.LooseNodes))
+                        integralTops[n.Id] = new Vec2(LayoutSolver.Round(n.CurrentTop.X + n.PivotOffset.X) - n.PivotOffset.X,
+                            LayoutSolver.Round(n.CurrentTop.Y + n.PivotOffset.Y) - n.PivotOffset.Y);
+                    var integral = Applied(s, new Result { Tops = integralTops });
+                    var integralResult = Solve(integral);
+                    WholeUnitMoves(integral, integralResult);
+                    Stable(integral, integralResult); Geometry(integral, integralResult); NotesClear(integral, integralResult);
                 } catch (Exception e) { throw new Exception("seed " + seed + ": " + e.Message); }
             }
         });
@@ -225,6 +250,19 @@ internal static class HierarchyTests
     }
 
     private static Box Placed(Node n, Result r) => new Box(r.Tops[n.Id].X, r.Tops[n.Id].Y, n.Width, n.Height);
+    private static void WholeUnitMoves(HierarchySnapshot s, Result r)
+    {
+        var pivots = s.Groups.SelectMany(Nodes).Concat(s.LooseNodes).ToDictionary(n => n.Id,
+            n => new Vec2(n.CurrentTop.X + n.PivotOffset.X, n.CurrentTop.Y + n.PivotOffset.Y));
+        foreach (var n in s.Groups.SelectMany(Groups).SelectMany(g => g.NonNodes))
+            pivots[n.Id] = new Vec2(n.Bounds.X + n.PivotOffset.X, n.Bounds.Y + n.PivotOffset.Y);
+        foreach (var move in r.Moves)
+        {
+            double dx = move.Pivot.X - pivots[move.Id].X, dy = move.Pivot.Y - pivots[move.Id].Y;
+            Assert(Math.Abs(dx - Math.Round(dx)) <= 1e-6 && Math.Abs(dy - Math.Round(dy)) <= 1e-6,
+                "fractional pivot delta for " + move.Id + ": " + dx + "," + dy);
+        }
+    }
     private static bool Overlap(Box a, Box b) => a.Right > b.X + 1e-7 && b.Right > a.X + 1e-7 && a.Bottom > b.Y + 1e-7 && b.Bottom > a.Y + 1e-7;
     private static Box Envelope(IEnumerable<Box> source)
     {
