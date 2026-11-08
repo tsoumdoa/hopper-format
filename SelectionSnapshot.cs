@@ -12,6 +12,7 @@ namespace HopperFormat
     internal sealed class SelectionSnapshot
     {
         internal Snapshot Snapshot { get; private set; }
+        internal GroupMembership.Index Membership { get; private set; }
         internal HierarchySnapshot Hierarchy { get; private set; }
         internal bool ContainsGroups { get; private set; }
         internal string Diagnostic { get; private set; }
@@ -26,12 +27,13 @@ namespace HopperFormat
             string.IsNullOrWhiteSpace(obj.NickName) ? obj.Name : obj.NickName;
 
         // Read existing geometry only: ownership preflight must never invoke group layout.
-        internal static string DescribeGroup(GH_Document document, GH_Group group)
+        internal static string DescribeGroup(GH_Document document, GH_Group group, GroupMembership.Index membership = null)
         {
             if (!string.IsNullOrWhiteSpace(group.NickName) && group.NickName != "Group")
                 return $"'{group.NickName}'";
-            var ids = GroupMembership.Descendants(document, group);
-            var nodes = document.Objects.Where(o => ids.Contains(o.InstanceGuid) && IsNode(o))
+            membership = membership ?? new GroupMembership.Index(document);
+            var ids = membership.Descendants(group);
+            var nodes = ids.Where(membership.Objects.ContainsKey).Select(id => membership.Objects[id]).Where(IsNode)
                 .OrderBy(o => o.Attributes?.Bounds.Top ?? float.PositiveInfinity)
                 .ThenBy(o => o.Attributes?.Bounds.Left ?? float.PositiveInfinity).ThenBy(o => o.InstanceGuid).ToArray();
             var description = nodes.Length == 0 ? "empty group" : "group [" +
@@ -43,19 +45,19 @@ namespace HopperFormat
                 : description;
         }
 
-        internal static string SkippedMessage(GH_Document document, IGH_DocumentObject obj, string reason)
+        internal static string SkippedMessage(GH_Document document, IGH_DocumentObject obj, string reason, GroupMembership.Index membership = null)
         {
             if (!(obj is GH_Group group)) return $"Skipped {obj.GetType().Name} '{Label(obj)}': {reason}";
-            var label = DescribeGroup(document, group);
+            var label = DescribeGroup(document, group, membership);
             if (reason.StartsWith(label + ": ", StringComparison.Ordinal)) reason = reason.Substring(label.Length + 2);
             return $"Skipped {label}: {reason}";
         }
 
-        private static void LayoutObject(GH_Document document, IGH_DocumentObject obj)
+        private static void LayoutObject(GH_Document document, IGH_DocumentObject obj, GroupMembership.Index membership)
         {
             if (obj.Attributes == null) obj.CreateAttributes();
             if (obj.Attributes == null) throw new InvalidOperationException(obj is GH_Group group
-                ? $"{DescribeGroup(document, group)}: no attributes" : $"No attributes for {Label(obj)}");
+                ? $"{DescribeGroup(document, group, membership)}: no attributes" : $"No attributes for {Label(obj)}");
             obj.Attributes.ExpireLayout();
             obj.Attributes.PerformLayout();
         }
@@ -68,24 +70,26 @@ namespace HopperFormat
 
         internal static SelectionSnapshot Capture(GH_Document document, Options options) => Capture(document, options, document.SelectedObjects());
 
-        internal static SelectionSnapshot Capture(GH_Document document, Options options, IEnumerable<IGH_DocumentObject> selection)
+        internal static SelectionSnapshot Capture(GH_Document document, Options options, IEnumerable<IGH_DocumentObject> selection, GroupMembership.Index membership = null)
         {
             var capture = new SelectionSnapshot();
             var selected = selection.ToArray();
             var selectedGroups = selected.OfType<GH_Group>().ToArray();
             capture.ContainsGroups = selectedGroups.Length > 0;
-            var byId = document.Objects.ToDictionary(o => o.InstanceGuid);
+            membership = membership ?? new GroupMembership.Index(document);
+            capture.Membership = membership;
+            var byId = membership.Objects;
             var descendants = new HashSet<Guid>();
             void Expand(GH_Group group)
             {
-                foreach (var id in group.ObjectIDs)
+                foreach (var id in membership.Members[group.InstanceGuid])
                     if (descendants.Add(id) && byId.TryGetValue(id, out var member) && member is GH_Group child) Expand(child);
             }
             foreach (var g in selectedGroups) Expand(g);
-            var targets = selected.Concat(document.Objects.Where(o => descendants.Contains(o.InstanceGuid)))
+            var targets = selected.Concat(descendants.Where(byId.ContainsKey).OrderBy(id => membership.ObjectOrder[id]).Select(id => byId[id]))
                 .GroupBy(o => o.InstanceGuid).Select(g => g.First()).ToArray();
             capture.CandidateIds.AddRange(targets.Where(o => IsNode(o) || o is GH_Group || descendants.Contains(o.InstanceGuid)).Select(o => o.InstanceGuid));
-            capture.Diagnostic = GroupMembership.OwnershipDiagnostic(document, capture.CandidateIds);
+            if (selectedGroups.Length > 0) capture.Diagnostic = membership.OwnershipDiagnostic(capture.CandidateIds);
             // Refuse group cycles before attempting Grasshopper's recursive group layout.
             if (capture.Diagnostic != null) return capture;
             var nodes = new List<Node>();
@@ -96,14 +100,14 @@ namespace HopperFormat
                 bool node = IsNode(obj);
                 if (!node && !descendants.Contains(obj.InstanceGuid))
                 {
-                    capture.Skipped.Add(SkippedMessage(document, obj, "not a formattable node"));
+                    capture.Skipped.Add(SkippedMessage(document, obj, "not a formattable node", membership));
                     continue;
                 }
-                LayoutObject(document, obj);
+                LayoutObject(document, obj, membership);
                 var bounds = obj.Attributes.Bounds;
                 if (bounds.Width <= 0 || bounds.Height <= 0)
                 {
-                    capture.Skipped.Add(SkippedMessage(document, obj, "empty bounds after layout"));
+                    capture.Skipped.Add(SkippedMessage(document, obj, "empty bounds after layout", membership));
                     continue;
                 }
                 capture.Objects.Add(obj.InstanceGuid, obj);
@@ -153,7 +157,7 @@ namespace HopperFormat
                     if (param.Attributes == null) param.CreateAttributes();
                     owner = param.Attributes.GetTopLevel.DocObject;
                 }
-                if (laidOut.Add(owner.InstanceGuid)) LayoutObject(document, owner);
+                if (laidOut.Add(owner.InstanceGuid)) LayoutObject(document, owner, membership);
                 return owner;
             }
             foreach (var obj in capture.Objects.Values.Where(IsNode))
@@ -174,15 +178,14 @@ namespace HopperFormat
                 var outputs = Outputs(obj);
                 for (int p = 0; p < outputs.Length; p++)
                     foreach (var recipient in outputs[p].Recipients)
-                        if (!capture.Objects.ContainsKey(Owner(recipient).InstanceGuid))
+                        if (!nodeIds.Contains(Owner(recipient).InstanceGuid))
                             outbound.Add(new ExternalOutbound { Node = obj.InstanceGuid, Port = p, TargetGripY = recipient.Attributes.InputGrip.Y });
             }
             capture.Snapshot = new Snapshot { Nodes = nodes, Edges = edges, Inbound = inbound, Outbound = outbound, Options = options };
             if (capture.ContainsGroups)
             {
                 var selectedIds = new HashSet<Guid>(selectedGroups.Select(g => g.InstanceGuid));
-                var roots = selectedGroups.Where(g => !GroupMembership.Ancestors(document, new[] { g.InstanceGuid })
-                    .Any(a => selectedIds.Contains(a.InstanceGuid))).OrderBy(g => g.InstanceGuid).ToArray();
+                var roots = selectedGroups.Where(g => !membership.AncestorIds(g.InstanceGuid).Any(selectedIds.Contains)).OrderBy(g => g.InstanceGuid).ToArray();
                 var nodeById = nodes.ToDictionary(n => n.Id);
                 var built = new Dictionary<Guid, HierarchyGroup>();
                 IEnumerable<Guid> MemberIds(HierarchyGroup g) => g.Nodes.Select(n => n.Id).Concat(g.NonNodes.Select(n => n.Id))
@@ -190,22 +193,22 @@ namespace HopperFormat
                 HierarchyGroup Build(GH_Group group)
                 {
                     if (built.TryGetValue(group.InstanceGuid, out var previous)) return previous;
-                    var childGroups = group.ObjectIDs.Where(byId.ContainsKey).Select(id => byId[id]).OfType<GH_Group>().ToArray();
-                    var children = childGroups.Where(c => !childGroups.Any(a => a != c &&
-                        GroupMembership.Ancestors(document, new[] { c.InstanceGuid }).Contains(a))).Select(Build).ToArray();
+                    var childGroups = membership.Members[group.InstanceGuid].Where(byId.ContainsKey).Select(id => byId[id]).OfType<GH_Group>().ToArray();
+                    var childGroupIds = new HashSet<Guid>(childGroups.Select(c => c.InstanceGuid));
+                    var children = childGroups.Where(c => !membership.AncestorIds(c.InstanceGuid).Any(childGroupIds.Contains)).Select(Build).ToArray();
                     var childIds = new HashSet<Guid>(children.SelectMany(MemberIds));
-                    var direct = group.ObjectIDs.Where(id => !childIds.Contains(id)).Distinct().ToArray();
+                    var direct = membership.Members[group.InstanceGuid].Where(id => !childIds.Contains(id)).Distinct().ToArray();
                     var g = new HierarchyGroup { Id = group.InstanceGuid, Children = children.Where(c => MemberIds(c).Any()).ToArray(),
                         Nodes = direct.Where(nodeById.ContainsKey).Select(id => nodeById[id]).ToArray(),
                         NonNodes = direct.Where(nonNodes.ContainsKey).Select(id => nonNodes[id]).ToArray(),
                         Locked = (group.NickName ?? string.Empty).IndexOf("[lock]", StringComparison.OrdinalIgnoreCase) >= 0 };
-                    LayoutObject(document, group);
-                    g.Label = DescribeGroup(document, group);
+                    LayoutObject(document, group, membership);
+                    g.Label = DescribeGroup(document, group, membership);
                     if (!MemberIds(g).Any()) { built.Add(g.Id, g); return g; }
                     // Measure padding against the same raw members the host used.
                     // Excluded empty rectangles must not turn into expanding padding
                     // when their measurable siblings move on a subsequent run.
-                    var envelope = group.ObjectIDs.Where(byId.ContainsKey).Select(id => byId[id])
+                    var envelope = membership.Members[group.InstanceGuid].Where(byId.ContainsKey).Select(id => byId[id])
                         .Where(o => o.Attributes != null).Select(o => o.Attributes.Bounds)
                         .Select(b => new Box(b.X, b.Y, b.Width, b.Height)).ToArray();
                     var bounds = group.Attributes.Bounds;

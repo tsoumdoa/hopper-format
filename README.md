@@ -72,9 +72,10 @@ multi-node ownership conflicts, and ungrouped objects (including nodes, notes,
 markup and HopperFormat itself) are fixed obstacles. Nested contraction cycles
 dissolve instead of skipping their roots. Log includes skipped and dissolved counts.
 The component's
-**Format all groups** menu item runs the same action whatever is selected. With no
-eligible group, F passes through and the pill says `No groups to format`, preserving
-the last run's outputs. One Undo restores the entire format-all run.
+**Format all groups** menu item runs the same action whatever is selected. F passes through when the document has no unlocked top-level group; the pill says
+`No groups to format`, preserving the last run's outputs. In the rare case where
+every unlocked top-level group turns out to be unformattable, the first tap is
+consumed and the pill says `No groups to format`. One Undo restores the entire format-all run.
 
 After formatting groups managed by **HopperGroup**, tap **Refresh** on HopperGroup
 before dragging members. Its automatic handshake is coming in a later stage.

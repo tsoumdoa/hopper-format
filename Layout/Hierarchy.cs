@@ -46,11 +46,25 @@ namespace HopperFormat.Layout
     {
         public static Result Solve(HierarchySnapshot snapshot)
         {
-            if (snapshot != null && snapshot.Groups != null && snapshot.Groups.Count == 0)
-                return LayoutSolver.Solve(new Snapshot { Nodes = snapshot.LooseNodes, Edges = snapshot.Edges,
-                    Inbound = snapshot.Inbound, Outbound = snapshot.Outbound, Options = snapshot.Options });
-            try { return new Run(snapshot).Solve(); }
-            catch (InvalidOperationException error) { return new Result { Diagnostic = error.Message }; }
+            try
+            {
+                if (snapshot != null && snapshot.Groups != null && snapshot.Groups.Count == 0)
+                {
+                    var result = LayoutSolver.Solve(new Snapshot { Nodes = snapshot.LooseNodes, Edges = snapshot.Edges,
+                        Inbound = snapshot.Inbound, Outbound = snapshot.Outbound, Options = snapshot.Options });
+                    if (!result.Success) result.FailureKind = FailureKind.Other;
+                    return result;
+                }
+                return new Run(snapshot).Solve();
+            }
+            catch (HierarchyFailure error) { return new Result { Diagnostic = error.Message, FailureKind = error.Kind }; }
+            catch (Exception error) { return new Result { Diagnostic = error.Message, FailureKind = FailureKind.Other }; }
+        }
+
+        private sealed class HierarchyFailure : InvalidOperationException
+        {
+            internal readonly FailureKind Kind;
+            internal HierarchyFailure(FailureKind kind, string message) : base(message) { Kind = kind; }
         }
 
         private sealed class Unit
@@ -73,6 +87,7 @@ namespace HopperFormat.Layout
             private readonly Dictionary<Guid, Box> boxes = new Dictionary<Guid, Box>();
             private readonly Dictionary<Guid, Box> originalBoxes = new Dictionary<Guid, Box>();
             private readonly List<string> log = new List<string>();
+            private readonly List<string> notices = new List<string>();
             private readonly HashSet<Guid> dissolved = new HashSet<Guid>();
             private readonly Dictionary<Guid, int> depths = new Dictionary<Guid, int>();
             private readonly HashSet<Guid> excluded = new HashSet<Guid>();
@@ -100,7 +115,7 @@ namespace HopperFormat.Layout
                             var a = entry.Value[i].Where(id => !LabelGroup(groups[id])).ToArray();
                             var b = entry.Value[j].Where(id => !LabelGroup(groups[id])).ToArray();
                             if (!a.Take(Math.Min(a.Length, b.Length)).SequenceEqual(b.Take(Math.Min(a.Length, b.Length))))
-                                throw new InvalidOperationException("Overlapping membership for '" + Label(entry.Key) + "'.");
+                                throw new HierarchyFailure(FailureKind.Overlap, "Overlapping membership for '" + Label(entry.Key) + "'.");
                         }
                 // Validate the original port-level DAG before contraction.
                 var flat = new Snapshot { Nodes = nodes.Values.ToArray(), Edges = snapshot.Edges,
@@ -139,7 +154,7 @@ namespace HopperFormat.Layout
                 if (path.Contains(group.Id)) throw new InvalidOperationException(group.Label + ": group membership cycle.");
                 if (groups.ContainsKey(group.Id) || nodes.ContainsKey(group.Id) || nonNodes.ContainsKey(group.Id))
                     throw new InvalidOperationException(group.Label + ": duplicate group identifier.");
-                if (group.Locked) throw new InvalidOperationException(group.Label + ": Selection belongs to locked group.");
+                if (group.Locked) throw new HierarchyFailure(FailureKind.Locked, group.Label + ": Selection belongs to locked group.");
                 var p = group.Padding;
                 if (new[] { p.Left, p.Top, p.Right, p.Bottom }.Any(v => !Graph.Finite(v) || v < 0))
                     throw new InvalidOperationException(group.Label + ": invalid padding.");
@@ -238,6 +253,7 @@ namespace HopperFormat.Layout
                     var next = candidates.OrderBy(c => depths[c.Child.Id]).ThenBy(c => c.Child.Id).ThenBy(c => c.Parent.Id).First();
                     dissolved.Add(next.Child.Id);
                     log.Add(next.Child.Label + " was laid out with " + next.Parent.Label + ": its wires leave and re-enter it");
+                    notices.Add(log[log.Count - 1]);
                 }
             }
 
@@ -283,7 +299,8 @@ namespace HopperFormat.Layout
                     return new Move { Id = p.Key, Pivot = n == null ? pivot : new Vec2(LayoutSolver.Round(pivot.X), LayoutSolver.Round(pivot.Y)) };
                 }).ToArray();
                 return new Result { Success = true, Tops = new SortedDictionary<Guid, Vec2>(tops), Moves = moves,
-                    GroupBoxes = new SortedDictionary<Guid, Box>(boxes), Log = log.ToArray(), Unstable = unstable, Rounds = rounds,
+                    GroupBoxes = new SortedDictionary<Guid, Box>(boxes), Log = log.ToArray(), Notices = notices.ToArray(),
+                    DissolvedCount = dissolved.Count, Unstable = unstable, Rounds = rounds,
                     Anchor = originalUnits.Length == 0 ? new Vec2(0, 0) : new Vec2(originalUnits.Min(b => b.X), originalUnits.Min(b => b.Y)) };
             }
             private void SolveGroup(HierarchyGroup g)
@@ -378,7 +395,10 @@ namespace HopperFormat.Layout
             {
                 if (units.Length == 0) return;
                 var owner = new Dictionary<Guid, Unit>();
-                foreach (var unit in units) foreach (var id in unit.Members) owner.Add(id, unit);
+                foreach (var unit in units)
+                    foreach (var id in unit.Members.OrderBy(id => id))
+                        if (!owner.TryAdd(id, unit))
+                            log.Add("Shared member '" + Label(id) + "': later owner ignored in " + label);
                 int Port(Unit u, Guid id, int port, bool input) => u.Node.Kind != NodeKind.Group ? port :
                     (input ? u.Inputs : u.Outputs)[(id, port)];
                 var edges = new List<Edge>(); var inbound = new List<ExternalInbound>(); var outbound = new List<ExternalOutbound>();
@@ -401,13 +421,14 @@ namespace HopperFormat.Layout
                 if (!result.Success) throw new InvalidOperationException(label + ": contracted graph: " + result.Diagnostic);
                 unstable |= result.Unstable; rounds = Math.Max(rounds, result.Rounds);
                 log.AddRange(result.Log.Select(line => label + ": " + line));
+                notices.AddRange(result.Notices.Select(line => label + ": " + line));
                 double dx = LayoutSolver.Round(anchor.X - result.Tops.Values.Min(t => t.X)),
                     dy = LayoutSolver.Round(anchor.Y - result.Tops.Values.Min(t => t.Y));
                 foreach (var u in units)
                 {
                     var t = result.Tops[u.Node.Id];
                     double tx = t.X + dx - u.Node.CurrentTop.X, ty = t.Y + dy - u.Node.CurrentTop.Y;
-                    foreach (var id in u.Members) tops[id] = new Vec2(tops[id].X + tx, tops[id].Y + ty);
+                    foreach (var id in u.Members.Where(id => owner[id] == u)) tops[id] = new Vec2(tops[id].X + tx, tops[id].Y + ty);
                 }
                 RefreshBoxes();
             }

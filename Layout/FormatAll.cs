@@ -41,11 +41,33 @@ namespace HopperFormat.Layout
             var solved = new List<(FormatAllTarget Target, Result Result)>();
             var obstacles = snapshot.Obstacles.ToList();
             var log = new List<string>();
+            var notices = new List<string>();
+            void Notice(string line) { log.Add(line); notices.Add(line); }
             int skipped = 0, formatted = 0;
-            var targetGroups = snapshot.Targets.ToDictionary(t => t.Id,
-                t => t.Hierarchy == null ? Array.Empty<HierarchyGroup>() : t.Hierarchy.Groups.SelectMany(Groups).ToArray());
-            var nodeIds = snapshot.Targets.ToDictionary(t => t.Id,
-                t => targetGroups[t.Id].SelectMany(g => g.Nodes).Select(n => n.Id).Concat(t.RigidNodeIds).Distinct().ToArray());
+            var targetGroups = new Dictionary<Guid, HierarchyGroup[]>();
+            var nodeIds = new Dictionary<Guid, Guid[]>();
+            var failures = new Dictionary<Guid, string>();
+            var physicalMembers = new Dictionary<Guid, Dictionary<Guid, NonNodeMember>>();
+            var originalBoxes = new Dictionary<Guid, Dictionary<Guid, Box>>();
+            foreach (var target in snapshot.Targets.OrderBy(t => t.Id))
+            {
+                try
+                {
+                    targetGroups[target.Id] = target.Hierarchy == null ? Array.Empty<HierarchyGroup>() : target.Hierarchy.Groups.SelectMany(Groups).ToArray();
+                    nodeIds[target.Id] = targetGroups[target.Id].SelectMany(g => g.Nodes).Select(n => n.Id).Concat(target.RigidNodeIds).Distinct().ToArray();
+                    physicalMembers[target.Id] = PhysicalMembers(target).ToDictionary(n => n.Id);
+                    originalBoxes[target.Id] = OriginalBoxes(target);
+                }
+                catch (Exception error)
+                {
+                    failures[target.Id] = error.Message;
+                    targetGroups[target.Id] = Array.Empty<HierarchyGroup>();
+                    nodeIds[target.Id] = target.RigidNodeIds.ToArray();
+                    physicalMembers[target.Id] = target.RigidMembers.GroupBy(n => n.Id).ToDictionary(g => g.Key, g => g.First());
+                    originalBoxes[target.Id] = target.RigidGroupBoxes.ToDictionary(p => p.Key, p => p.Value);
+                    originalBoxes[target.Id][target.Id] = target.Bounds;
+                }
+            }
             // A non-nested label is an annotation on its node, not a second
             // independently movable owner. Use the containing root (or stable label).
             var aliases = new Dictionary<Guid, Guid>();
@@ -65,18 +87,22 @@ namespace HopperFormat.Layout
             foreach (var target in snapshot.Targets.Where(t => !aliases.ContainsKey(t.Id)).OrderBy(t => t.Id))
             {
                 bool sharedLock = nodeIds[target.Id].Any(lockedNodes.Contains);
-                var reason = target.SkipReason ?? (ownership.Contains(target.Id) ? "Overlapping membership between top-level groups" :
+                var reason = target.SkipReason ?? (failures.TryGetValue(target.Id, out var failure) ? failure : null) ?? (ownership.Contains(target.Id) ? "Overlapping membership between top-level groups" :
                     sharedLock ? "Selection belongs to locked or fixed group" : null);
-                var result = reason == null && target.Hierarchy != null ? HierarchySolver.Solve(target.Hierarchy) : null;
-                reason = reason ?? (result == null ? "Missing hierarchy snapshot" : result.Success ? null : result.Diagnostic);
-                if (reason == null && !result.GroupBoxes.ContainsKey(target.Id)) reason = "no measurable members";
+                Result result = null;
+                try
+                {
+                    if (reason == null && target.Hierarchy != null) result = HierarchySolver.Solve(target.Hierarchy);
+                    reason = reason ?? (result == null ? "Missing hierarchy snapshot" : result.Success ? null : result.Diagnostic);
+                    if (reason == null && !result.GroupBoxes.ContainsKey(target.Id)) reason = "no measurable members";
+                }
+                catch (Exception error) { reason = error.Message; }
                 bool fixedTarget = target.Fixed || sharedLock || ownership.Contains(target.Id) || targetGroups[target.Id].Any(g => g.Locked)
-                    || reason != null && (reason.StartsWith("Overlapping membership", StringComparison.Ordinal)
-                        || reason.StartsWith("Selection belongs to locked", StringComparison.Ordinal));
+                    || result?.FailureKind == FailureKind.Overlap || result?.FailureKind == FailureKind.Locked;
                 if (reason != null)
                 {
                     skipped++;
-                    log.Add(Skipped(target, reason) + (fixedTarget ? " (fixed)" :
+                    Notice(Skipped(target, reason) + (fixedTarget ? " (fixed)" :
                         Measurable(target.Bounds) ? " (moves rigidly)" : " (no measurable outline)"));
                     if (fixedTarget)
                     {
@@ -84,25 +110,29 @@ namespace HopperFormat.Layout
                         continue;
                     }
                     if (!Measurable(target.Bounds)) continue;
-                    result = RigidResult(target);
+                    result = new Result { Success = true,
+                        Tops = physicalMembers[target.Id].ToDictionary(p => p.Key, p => new Vec2(p.Value.Bounds.X, p.Value.Bounds.Y)),
+                        GroupBoxes = originalBoxes[target.Id] };
                 }
                 else formatted++;
                 solved.Add((target, result));
                 log.AddRange(result.Log);
+                notices.AddRange(result.Notices);
             }
             if (solved.Count == 0)
             {
                 foreach (var alias in snapshot.Targets.Where(t => aliases.ContainsKey(t.Id)).OrderBy(t => t.Id))
-                { skipped++; log.Add(Skipped(alias, "its node belongs to a fixed group") + " (fixed)"); }
-                log.Add("Format all: 0 formatted, " + skipped + " skipped, 0 dissolved");
+                { skipped++; Notice(Skipped(alias, "its node belongs to a fixed group") + " (fixed)"); }
+                Notice("Format all: 0 formatted, " + skipped + " skipped, 0 dissolved");
                 return new FormatAllResult { Skipped = skipped, Layout = new Result {
-                    Diagnostic = "No groups to format", Log = log.ToArray() } };
+                    Diagnostic = "No groups to format", Log = log.ToArray(), Notices = log.ToArray() } };
             }
 
             var boxes = solved.ToDictionary(s => s.Target.Id, s => s.Result.GroupBoxes[s.Target.Id]);
             var tidy = GroupTidy.Solve(boxes, obstacles, snapshot.Options);
             if (!tidy.Success) return new FormatAllResult { Skipped = skipped, Layout = tidy };
             log.AddRange(tidy.Log);
+            notices.AddRange(tidy.Notices);
             var tops = new SortedDictionary<Guid, Vec2>();
             var groupBoxes = new SortedDictionary<Guid, Box>();
             var moves = new SortedDictionary<Guid, Move>();
@@ -110,11 +140,15 @@ namespace HopperFormat.Layout
             {
                 var before = boxes[item.Target.Id]; var after = tidy.GroupBoxes[item.Target.Id];
                 double dx = after.X - before.X, dy = after.Y - before.Y;
-                var physical = PhysicalMembers(item.Target).ToDictionary(n => n.Id);
+                var physical = physicalMembers[item.Target.Id];
                 foreach (var pair in item.Result.Tops)
                 {
                     var top = new Vec2(pair.Value.X + dx, pair.Value.Y + dy);
-                    tops.Add(pair.Key, top);
+                    if (!tops.TryAdd(pair.Key, top))
+                    {
+                        log.Add("Shared member '" + physical[pair.Key].Label + "': later owner ignored in " + item.Target.Label);
+                        continue;
+                    }
                     var member = physical[pair.Key]; var old = member.Bounds; var offset = member.PivotOffset;
                     if (!SamePivot(top.X + offset.X, old.X + offset.X) || !SamePivot(top.Y + offset.Y, old.Y + offset.Y))
                         moves.Add(pair.Key, new Move { Id = pair.Key, Pivot = new Vec2(top.X + offset.X, top.Y + offset.Y) });
@@ -124,26 +158,33 @@ namespace HopperFormat.Layout
             }
             foreach (var alias in snapshot.Targets.Where(t => aliases.ContainsKey(t.Id)).OrderBy(t => t.Id))
             {
-                var node = PhysicalMembers(alias).First(n => n.Id == nodeIds[alias.Id][0]);
+                var node = physicalMembers[alias.Id][nodeIds[alias.Id][0]];
                 if (!tops.TryGetValue(node.Id, out var top))
-                { skipped++; log.Add(Skipped(alias, "its node belongs to a fixed group") + " (fixed)"); continue; }
+                { skipped++; Notice(Skipped(alias, "its node belongs to a fixed group") + " (fixed)"); continue; }
                 if (alias.SkipReason == null) formatted++;
-                else { skipped++; log.Add(Skipped(alias, alias.SkipReason) + " (moves rigidly with its node)"); }
-                double dx = top.X - node.Bounds.X, dy = top.Y - node.Bounds.Y;
-                foreach (var pair in OriginalBoxes(alias)) groupBoxes[pair.Key] = Translate(pair.Value, dx, dy);
-                foreach (var member in PhysicalMembers(alias).Where(n => !tops.ContainsKey(n.Id)))
+                else { skipped++; Notice(Skipped(alias, alias.SkipReason) + " (moves rigidly with its node)"); }
+                double dx = LayoutSolver.Round(top.X - node.Bounds.X), dy = LayoutSolver.Round(top.Y - node.Bounds.Y);
+                foreach (var pair in originalBoxes[alias.Id]) groupBoxes[pair.Key] = Translate(pair.Value, dx, dy);
+                foreach (var member in physicalMembers[alias.Id].Values)
                 {
+                    if (tops.ContainsKey(member.Id))
+                    {
+                        if (member.Id != node.Id) log.Add("Shared member '" + member.Label + "': later owner ignored in " + alias.Label);
+                        continue;
+                    }
                     var moved = new Vec2(member.Bounds.X + dx, member.Bounds.Y + dy);
                     tops.Add(member.Id, moved);
-                    if (dx != 0 || dy != 0) moves.Add(member.Id, new Move { Id = member.Id,
+                    if (!SamePivot(moved.X + member.PivotOffset.X, member.Bounds.X + member.PivotOffset.X)
+                        || !SamePivot(moved.Y + member.PivotOffset.Y, member.Bounds.Y + member.PivotOffset.Y)) moves.Add(member.Id, new Move { Id = member.Id,
                         Pivot = new Vec2(moved.X + member.PivotOffset.X, moved.Y + member.PivotOffset.Y) });
                 }
             }
-            int dissolved = log.Count(l => l.Contains("its wires leave and re-enter it"));
-            log.Add("Format all: " + formatted + " formatted, " + skipped + " skipped, " + dissolved + " dissolved");
+            int dissolved = solved.Sum(s => s.Result.DissolvedCount);
+            Notice("Format all: " + formatted + " formatted, " + skipped + " skipped, " + dissolved + " dissolved");
             return new FormatAllResult { Formatted = formatted, Skipped = skipped, Layout = new Result {
                 Success = true, Tops = tops, GroupBoxes = groupBoxes, Moves = moves.Values.ToArray(),
-                Rounds = tidy.Rounds, Unstable = tidy.Unstable || solved.Any(s => s.Result.Unstable), Log = log.ToArray() } };
+                Rounds = tidy.Rounds, Unstable = tidy.Unstable || solved.Any(s => s.Result.Unstable), Log = log.ToArray(),
+                Notices = notices.ToArray(), DissolvedCount = dissolved } };
         }
 
         private static string Skipped(FormatAllTarget target, string reason)
@@ -182,11 +223,13 @@ namespace HopperFormat.Layout
             if (target.Bounds.Width > 0 && target.Bounds.Height > 0) boxes[target.Id] = target.Bounds;
             return boxes;
         }
-        private static Result RigidResult(FormatAllTarget target) => new Result { Success = true,
-            Tops = PhysicalMembers(target).ToDictionary(n => n.Id, n => new Vec2(n.Bounds.X, n.Bounds.Y)),
-            GroupBoxes = OriginalBoxes(target) };
-
-        private static IEnumerable<HierarchyGroup> Groups(HierarchyGroup g) => new[] { g }.Concat(g.Children.SelectMany(Groups));
+        private static IEnumerable<HierarchyGroup> Groups(HierarchyGroup g) => Groups(g, new HashSet<Guid>());
+        private static IEnumerable<HierarchyGroup> Groups(HierarchyGroup g, HashSet<Guid> seen)
+        {
+            if (g == null || !seen.Add(g.Id)) throw new InvalidOperationException("Invalid or cyclic hierarchy group.");
+            yield return g;
+            foreach (var child in g.Children.SelectMany(c => Groups(c, seen))) yield return child;
+        }
         internal static bool Measurable(Box b) => Graph.Finite(b.X) && Graph.Finite(b.Y) && Graph.Finite(b.Width) && Graph.Finite(b.Height)
             && Graph.Finite(b.Right) && Graph.Finite(b.Bottom) && b.Width > 0 && b.Height > 0;
         private static bool SamePivot(double a, double b) => Math.Abs(a - b) <= FloatTolerance(b);
@@ -313,8 +356,9 @@ namespace HopperFormat.Layout
                 boxes = next;
                 if (!changed) break;
             }
+            var notices = changed ? new[] { "Unstable: format-all tidy did not settle within five passes; kept the last result." } : Array.Empty<string>();
             return new Result { Success = true, GroupBoxes = new SortedDictionary<Guid, Box>(boxes), Rounds = rounds,
-                Unstable = changed, Log = changed ? new[] { "Unstable: format-all tidy did not settle within five passes; kept the last result." } : Array.Empty<string>() };
+                Unstable = changed, Log = notices, Notices = notices };
         }
 
         private static bool Overlap(double a, double ar, double b, double br) => ar > b + Epsilon && br > a + Epsilon;

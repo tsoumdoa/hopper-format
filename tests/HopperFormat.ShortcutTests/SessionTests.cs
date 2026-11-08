@@ -18,6 +18,46 @@ internal static class SessionTests
 
     internal static int Run(Form form)
     {
+        Check(form, "Flat overlapping selection formats normally and records Format selection", f =>
+        {
+            var extraA = new TestComponent(); var extraB = new TestComponent();
+            var a = new GH_Group { NickName = "Unrelated A" }; var b = new GH_Group { NickName = "Unrelated B" };
+            a.ObjectIDs.AddRange(new[] { f.First.InstanceGuid,extraA.InstanceGuid });
+            b.ObjectIDs.AddRange(new[] { f.First.InstanceGuid,extraB.InstanceGuid });
+            f.Document.Objects.AddRange(new IGH_DocumentObject[] { extraA,extraB,a,b });
+            Tap(f.Canvas); Tap(f.Canvas);
+            Assert(f.Session.Status.StartsWith("Formatted selection") && f.Session.LastMoves > 0
+                && f.Document.UndoUtil.Records.Single().Name == "Format selection" && extraA.Attributes == null && extraB.Attributes == null,
+                "flat selection was refused by unrelated ownership");
+        });
+        Check(form, "Selected group instability warning remains visible without Debug", f =>
+        {
+            var group = new GH_Group { NickName = "Selected group", Document = f.Document };
+            group.ObjectIDs.AddRange(new[] { f.First.InstanceGuid,f.Second.InstanceGuid });
+            f.Document.Objects.Add(group); f.Document.Selection.Clear(); f.Document.Selection.Add(group);
+            f.Unstable = true; f.Session.Run();
+            const string warning = "'Selected group': Unstable: layout did not settle within three rounds.";
+            Assert(f.Session.LastMoves > 0 && f.Session.Status.EndsWith(" (not fully settled, FF again may adjust)")
+                && f.Session.Log(false).Contains(warning) && f.Session.Log(true).Count(l => l == warning) == 1,"prefixed warning hidden or duplicated");
+        });
+        Check(form, "Held zero-count F runs membership preflight once until key-up", f =>
+        {
+            var a = new GH_Group(); var b = new GH_Group();
+            a.ObjectIDs.AddRange(new[] { f.First.InstanceGuid,f.Second.InstanceGuid });
+            b.ObjectIDs.AddRange(new[] { f.First.InstanceGuid,f.Second.InstanceGuid });
+            f.Document.Objects.AddRange(new[] { a,b }); f.Document.Selection.Clear();
+            a.ObjectIDReads = b.ObjectIDReads = 0;
+            Assert(FormatAllCapture.EligibleCount(f.Document) == 0,"zero-count setup");
+            int readsA = a.ObjectIDReads, readsB = b.ObjectIDReads;
+            a.ObjectIDReads = b.ObjectIDReads = 0;
+            var dispatch = typeof(FormatSession).GetMethod("Dispatch",System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            for (int i = 0; i < 12; i++) dispatch.Invoke(f.Session,new object[] { Keys.F,true });
+            Assert(a.ObjectIDReads == readsA && b.ObjectIDReads == readsB && PillText(f) == "No groups to format","held F repeated count");
+            dispatch.Invoke(f.Session,new object[] { Keys.F,false });
+            dispatch.Invoke(f.Session,new object[] { Keys.F,true });
+            Assert(a.ObjectIDReads == 2 * readsA && b.ObjectIDReads == 2 * readsB,"key-up did not release count guard");
+            dispatch.Invoke(f.Session,new object[] { Keys.F,false });
+        });
         Check(form, "Session FF previews selection then runs once and refreshes outputs", f =>
         {
             Tap(f.Canvas);
@@ -392,7 +432,18 @@ internal static class SessionTests
                 if (Unstable)
                 {
                     result.Unstable = true;
-                    result.Log = result.Log.Concat(new[] { "Unstable: layout did not settle within three rounds." }).ToArray();
+                    result.Notices = new[] { "Unstable: layout did not settle within three rounds." };
+                    result.Log = result.Log.Concat(result.Notices).ToArray();
+                }
+                return result;
+            }, snapshot =>
+            {
+                var result = HierarchySolver.Solve(snapshot);
+                if (Unstable)
+                {
+                    result.Unstable = true;
+                    result.Notices = new[] { "'Selected group': Unstable: layout did not settle within three rounds." };
+                    result.Log = result.Log.Concat(result.Notices).ToArray();
                 }
                 return result;
             });

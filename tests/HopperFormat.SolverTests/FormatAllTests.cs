@@ -317,7 +317,104 @@ internal static class FormatAllTests
                     "seed " + seed + " composition not fixed: " + Coordinates(r.Layout) + " -> " + Coordinates(again.Layout));
             }
         });
+        Check("Shared note between a label and a big target has one deterministic owner", () => {
+            foreach (bool alias in new[] { false, true }) {
+                var a = TestNode(100,10,20); var b = TestNode(101,20,30); var c = TestNode(102,300,50);
+                var note = new NonNodeMember { Id = Id(500), Label = "Shared note", Bounds = new Box(50,90,20,15) };
+                var big = new HierarchyGroup { Id = Id(1), Nodes = new[] { a,b }, NonNodes = new[] { note } };
+                var label = new HierarchyGroup { Id = Id(2), Nodes = new[] { alias ? b : c }, NonNodes = new[] { note } };
+                var targets = new[] { new FormatAllTarget { Id = big.Id, Hierarchy = new HierarchySnapshot { Groups = new[] { big } } },
+                    new FormatAllTarget { Id = label.Id, Hierarchy = new HierarchySnapshot { Groups = new[] { label } } } };
+                var snapshot = new FormatAllSnapshot { Targets = targets };
+                var r = FormatAllSolver.Solve(snapshot);
+                Assert(r.Layout.Success && r.Formatted == 2 && r.Skipped == 0 && r.Layout.Tops.Count == (alias ? 3 : 4),"shared note refused or duplicated");
+                Assert(r.Layout.Log.Any(l => l.Contains("Shared note") && l.Contains("later owner ignored")),"duplicate owner not logged");
+                Assert(r.Layout.Moves.Select(m => m.Id).Distinct().Count() == r.Layout.Moves.Count,"note moved twice");
+                var reversed = FormatAllSolver.Solve(new FormatAllSnapshot { Targets = targets.Reverse().ToArray() });
+                Assert(Coordinates(r.Layout) == Coordinates(reversed.Layout) && r.Layout.Log.SequenceEqual(reversed.Layout.Log),"owner depends on enumeration");
+                WholeMoves(snapshot,r.Layout,"shared note");
+                if (alias) StableAll(snapshot,r.Layout,"shared note alias");
+            }
+        });
+        Check("Two label children sharing a note translate it with the first owning unit", () => {
+            var a = TestNode(100,10,20); var b = TestNode(101,20,30);
+            var note = new NonNodeMember { Id = Id(500), Label = "Shared note", Bounds = new Box(50,90,20,15) };
+            var children = new[] { new HierarchyGroup { Id = Id(2), Nodes = new[] { a }, NonNodes = new[] { note } },
+                new HierarchyGroup { Id = Id(3), Nodes = new[] { b }, NonNodes = new[] { note } } };
+            var root = new HierarchyGroup { Id = Id(1), Children = children };
+            var snapshot = new FormatAllSnapshot { Targets = new[] { new FormatAllTarget { Id = root.Id,
+                Hierarchy = new HierarchySnapshot { Groups = new[] { root } } } } };
+            var r = FormatAllSolver.Solve(snapshot).Layout;
+            Assert(r.Success && r.Tops.Count == 3 && r.Log.Any(l => l.Contains("later owner ignored")),"shared child note failed or unlogged");
+            Assert(r.Tops[note.Id].X - r.Tops[a.Id].X == 40 && r.Tops[note.Id].Y - r.Tops[a.Id].Y == 70,"note translated by both children");
+            root.Children = children.Reverse().ToArray();
+            var reversed = FormatAllSolver.Solve(snapshot).Layout;
+            Assert(Coordinates(r) == Coordinates(reversed) && r.Log.SequenceEqual(reversed.Log),"child owner depends on enumeration");
+            StableAll(snapshot,r,"shared child note");
+        });
+        Check("Unexpected target exception skips rigidly while healthy targets format", () => {
+            var bad = new FormatAllTarget { Id = Id(1), Label = "Throws", Bounds = new Box(0,0,80,40),
+                Hierarchy = new HierarchySnapshot { Groups = new[] { new HierarchyGroup { Id = Id(1), Nodes = new ThrowingList<Node>() } } },
+                RigidMembers = new[] { new NonNodeMember { Id = Id(100), Bounds = new Box(0,0,80,40) } } };
+            var good = new FormatAllTarget { Id = Id(2), Hierarchy = new HierarchySnapshot {
+                Groups = new[] { new HierarchyGroup { Id = Id(2), Nodes = new[] { TestNode(101,10,100),TestNode(102,20,110) } } } } };
+            var r = FormatAllSolver.Solve(new FormatAllSnapshot { Targets = new[] { bad,good } });
+            Assert(r.Layout.Success && r.Formatted == 1 && r.Skipped == 1 && r.Layout.Tops.Count == 3
+                && r.Layout.GroupBoxes.ContainsKey(bad.Id) && r.Layout.Log.Count(l => l.StartsWith("Skipped")) == 1
+                && r.Layout.Log.Any(l => l.Contains("injected enumeration failure")),"one target exception aborted the run");
+            var inner = HierarchySolver.Solve(bad.Hierarchy);
+            Assert(!inner.Success && inner.FailureKind == FailureKind.Other && inner.Diagnostic == "injected enumeration failure","unexpected hierarchy exception escaped");
+        });
+        Check("Typed hierarchy overlap and lock failures keep format-all targets fixed", () => {
+            var shared = TestNode(100,10,20);
+            foreach (bool locked in new[] { false,true }) {
+                var left = new HierarchyGroup { Id = Id(3), Label = "'child'", Nodes = new[] { shared,TestNode(101,20,30) }, Locked = locked };
+                var right = new HierarchyGroup { Id = Id(4), Nodes = new[] { shared,TestNode(102,20,30) } };
+                var root = new HierarchyGroup { Id = Id(1), Label = "'root'", Children = locked ? new[] { left } : new[] { left,right } };
+                var hierarchy = new HierarchySnapshot { Groups = new[] { root } };
+                var inner = HierarchySolver.Solve(hierarchy);
+                Assert(inner.FailureKind == (locked ? FailureKind.Locked : FailureKind.Overlap),"missing typed reason");
+                var bad = new FormatAllTarget { Id = root.Id, Label = root.Label, Bounds = new Box(0,0,80,40), Hierarchy = hierarchy };
+                var good = new FormatAllTarget { Id = Id(2), Hierarchy = new HierarchySnapshot {
+                    Groups = new[] { new HierarchyGroup { Id = Id(2), Nodes = new[] { TestNode(103,0,100) } } } } };
+                var r = FormatAllSolver.Solve(new FormatAllSnapshot { Targets = new[] { bad,good } });
+                Assert(r.Layout.Success && r.Skipped == 1 && !r.Layout.GroupBoxes.ContainsKey(bad.Id)
+                    && r.Layout.Log.Any(l => l.EndsWith("(fixed)")),"typed refusal moved rigidly");
+            }
+        });
+        Check("Status words in group labels do not create warnings or dissolved counts", () => {
+            var root = new HierarchyGroup { Id = Id(1), Label = "'Unstable: its wires leave and re-enter it'",
+                Nodes = new[] { TestNode(100,10,20),TestNode(101,20,30) } };
+            var r = FormatAllSolver.Solve(new FormatAllSnapshot { Targets = new[] { new FormatAllTarget {
+                Id = root.Id, Label = root.Label, Hierarchy = new HierarchySnapshot { Groups = new[] { root } } } } }).Layout;
+            Assert(r.Success && !r.Unstable && r.DissolvedCount == 0 && r.Notices.Count == 1
+                && r.Notices.Single() == "Format all: 1 formatted, 0 skipped, 0 dissolved"
+                && r.Log.Any(l => l.StartsWith(root.Label + ": ")),"message text changed typed log routing or counts");
+        });
+        Check("Fractional alias pivots give notes whole translations and repeat without moves", () => {
+            var a = TestNode(100,10.3,20.4); var b = TestNode(101,20.3,30.4);
+            var note = new NonNodeMember { Id = Id(500), Bounds = new Box(150.2,100.6,20,15), PivotOffset = new Vec2(.7,.8) };
+            var big = new HierarchyGroup { Id = Id(1), Nodes = new[] { a,b } };
+            var label = new HierarchyGroup { Id = Id(2), Nodes = new[] { b }, NonNodes = new[] { note } };
+            var snapshot = new FormatAllSnapshot { Targets = new[] {
+                new FormatAllTarget { Id = big.Id, Hierarchy = new HierarchySnapshot { Groups = new[] { big } } },
+                new FormatAllTarget { Id = label.Id, Hierarchy = new HierarchySnapshot { Groups = new[] { label } } } } };
+            var r = FormatAllSolver.Solve(snapshot).Layout;
+            Assert(r.Success && Whole(r.Tops[note.Id].X - note.Bounds.X) && Whole(r.Tops[note.Id].Y - note.Bounds.Y),"alias note took fractional translation");
+            StableAll(snapshot,r,"fractional alias");
+            var next = Reapply(snapshot,r);
+            var noOp = FormatAllSolver.Solve(next).Layout;
+            Assert(!noOp.Moves.Any(m => m.Id == note.Id),"alias note recorded a no-op");
+        });
         return failures;
+    }
+
+    private sealed class ThrowingList<T> : System.Collections.Generic.IReadOnlyList<T>
+    {
+        public int Count => 1;
+        public T this[int index] => throw new ArgumentException("injected enumeration failure");
+        public System.Collections.Generic.IEnumerator<T> GetEnumerator() => throw new ArgumentException("injected enumeration failure");
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     private static void StableAll(FormatAllSnapshot s, Result r, string context)

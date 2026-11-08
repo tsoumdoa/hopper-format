@@ -14,6 +14,60 @@ internal static class GroupHostTests
     { try { test(); Console.WriteLine("PASS " + name); } catch (Exception e) { failures++; Console.WriteLine("FAIL " + name + ": " + e.Message); } }
     internal static int Run()
     {
+        Check("Group member excluded from node set has symmetric external wire hints", () => {
+            var doc = new GH_Document(); var a = new TestComponent(); var formatter = new HopperFormatComponent();
+            var group = new GH_Group { NickName = "Pipeline", Document = doc };
+            group.ObjectIDs.AddRange(new[] { a.InstanceGuid,formatter.InstanceGuid });
+            TestParam.Connect(a.Params.Output[0],formatter.Params.Input[0]);
+            TestParam.Connect(formatter.Params.Output[0],a.Params.Input[0]);
+            doc.Objects.AddRange(new IGH_DocumentObject[] { a,formatter,group });
+            var capture = SelectionSnapshot.Capture(doc,new Options(),new[] { group });
+            Assert(capture.Diagnostic == null && capture.Objects.ContainsKey(formatter.InstanceGuid)
+                && capture.Snapshot.Nodes.Count == 1 && capture.Snapshot.Edges.Count == 0
+                && capture.Snapshot.Inbound.Single().Node == a.InstanceGuid && capture.Snapshot.Outbound.Single().Node == a.InstanceGuid,
+                "non-node group member was classified as internal in one direction");
+        });
+        Check("Measurable membership cycles stay fixed and alone report No groups to format", () => {
+            var doc = new GH_Document(); var a = new GH_Group { NickName = "Cycle A" }; var b = new GH_Group { NickName = "Cycle B" };
+            a.ObjectIDs.Add(b.InstanceGuid); b.ObjectIDs.Add(a.InstanceGuid); doc.Objects.AddRange(new[] { a,b });
+            foreach (var g in new[] { a,b }) { g.CreateAttributes(); g.Attributes.Bounds = new RectangleF(1000,60,80,900); }
+            var capture = FormatAllCapture.Capture(doc,new Options()); var result = FormatAllSolver.Solve(capture.Snapshot);
+            Assert(capture.Snapshot.Targets.All(t => t.Fixed) && !result.Layout.Success && result.Layout.Diagnostic == "No groups to format"
+                && result.Layout.Moves.Count == 0 && result.Layout.GroupBoxes.Count == 0 && a.Attributes.Layouts == 0 && b.Attributes.Layouts == 0,
+                "measurable cycle became a movable phantom or invoked layout");
+            var node = new TestComponent { InitialPivot = new PointF(20,95) }; var good = new GH_Group { NickName = "Good", Document = doc };
+            good.ObjectIDs.Add(node.InstanceGuid); doc.Objects.AddRange(new IGH_DocumentObject[] { node,good });
+            capture = FormatAllCapture.Capture(doc,new Options()); result = FormatAllSolver.Solve(capture.Snapshot);
+            var alone = FormatAllSolver.Solve(new FormatAllSnapshot { Targets = capture.Snapshot.Targets.Where(t => t.Id == good.InstanceGuid).ToArray() });
+            Assert(result.Layout.Success && result.Formatted == 1 && result.Skipped == 2
+                && result.Layout.GroupBoxes[good.InstanceGuid].Y == alone.Layout.GroupBoxes[good.InstanceGuid].Y
+                && result.Layout.Tops[node.InstanceGuid].Y == alone.Layout.Tops[node.InstanceGuid].Y,"cycle became a row or snap anchor");
+        });
+        Check("Large-document preflight and capture read each membership list once per run", () => {
+            var doc = new GH_Document(); var groups = new System.Collections.Generic.List<GH_Group>();
+            for (int i = 0; i < 160; i++) {
+                var a = new TestComponent { InitialPivot = new PointF(i * 400,20) };
+                var b = new TestComponent { InitialPivot = new PointF(i * 400 + 100,40) };
+                var label = new GH_Group { NickName = "Label " + i, Document = doc }; label.ObjectIDs.Add(a.InstanceGuid);
+                var root = new GH_Group { NickName = "Root " + i, Document = doc }; root.ObjectIDs.AddRange(new[] { label.InstanceGuid,b.InstanceGuid });
+                doc.Objects.AddRange(new IGH_DocumentObject[] { a,b,label,root }); groups.AddRange(new[] { label,root });
+            }
+            foreach (var g in groups) g.ObjectIDReads = 0;
+            Assert(FormatAllCapture.EligibleCount(doc) == 160 && groups.All(g => g.ObjectIDReads == 1 && g.Attributes == null),"preflight rebuilt membership or measured objects");
+            // Host layout reads are separate from membership preflight. Supply
+            // measured host boxes without consulting the test double's lists.
+            for (int i = 0; i < groups.Count; i++) {
+                var g = groups[i]; g.CreateAttributes();
+                g.Attributes.Bounds = new RectangleF((i / 2) * 400 - 20,-20,240,140);
+                g.Attributes.OnLayout = () => { }; g.ObjectIDReads = 0;
+            }
+            var capture = FormatAllCapture.Capture(doc,new Options());
+            Assert(capture.Snapshot.Targets.Count == 160 && capture.Snapshot.Targets.All(t => t.SkipReason == null)
+                && groups.All(g => g.ObjectIDReads == 1),"capture rebuilt membership per root or diagnostic");
+            var first = groups[0];
+            var index = new GroupMembership.Index(doc);
+            Assert(index.Ancestors(first.ObjectIDs).Count == 2 && index.Descendants(groups[1]).Count == 3,"indexed reachability changed");
+        });
         Check("Default group description orders descendant nodes by top, left and id and truncates after three", () => {
             var doc = new GH_Document();
             var a = new TestComponent { NickName = "A", InitialPivot = new PointF(10, 0), Offset = PointF.Empty };
@@ -63,7 +117,7 @@ internal static class GroupHostTests
             Assert(GroupMembership.OwnershipDiagnostic(doc, new[] { group.InstanceGuid }) == "empty group: group membership cycle", "cycle did not describe its group");
             var all = FormatAllCapture.Capture(doc, new Options());
             var result = FormatAllSolver.Solve(all.Snapshot);
-            Assert(result.Layout.Log.Contains("Skipped empty group: group membership cycle (no measurable outline)") && group.Attributes == null,
+            Assert(result.Layout.Log.Contains("Skipped empty group: group membership cycle (fixed)") && group.Attributes == null,
                 "cycle repeated group context or invoked layout: " + string.Join("; ", result.Layout.Log));
             var member = new GH_Group { NickName = "Group" };
             var owners = new[] { new GH_Group { NickName = "Owner A" }, new GH_Group { NickName = "Owner B" } };
