@@ -123,12 +123,13 @@ namespace HopperFormat
                 && GH_Canvas.NavigationZoomIn != key && GH_Canvas.NavigationZoomOut != key
                 && !CanvasShortcutHook.HasReservedShortcut(_canvas, key);
                 if (!scope) return;
-                var selected = _document.SelectedObjects();
-                eligible = selected.Any(o => SelectionSnapshot.IsNode(o) || o is Grasshopper.Kernel.Special.GH_Group);
+                var selected = _document.SelectedObjects().ToArray();
+                eligible = selected.Length == 0 ? FormatAllCapture.EligibleCount(_document) > 0
+                    : selected.Any(o => SelectionSnapshot.IsNode(o) || o is Grasshopper.Kernel.Special.GH_Group);
                 if (!eligible)
                 {
                     // Hint only: eligibility checks must preserve the last run's outputs.
-                    ShowPill("Select components to format");
+                    ShowPill(selected.Length == 0 ? "No groups to format" : "Select components to format");
                 }
             });
             return eligible;
@@ -144,14 +145,19 @@ namespace HopperFormat
                 > Math.Max(MinimumTapWindowMilliseconds, SystemInformation.DoubleClickTime))
             {
                 _firstTap = timestamp;
-                Show($"Format selection ({_document.SelectedObjects().Count(o => SelectionSnapshot.IsNode(o) || o is Grasshopper.Kernel.Special.GH_Group)} objects) · tap F again");
+                Show(_document.SelectedObjects().Count == 0
+                    ? $"Format all groups ({FormatAllCapture.EligibleCount(_document)}) · tap F again"
+                    : $"Format selection ({_document.SelectedObjects().Count(o => SelectionSnapshot.IsNode(o) || o is Grasshopper.Kernel.Special.GH_Group)} objects) · tap F again");
                 return;
             }
             _firstTap = null;
-            Run();
+            if (_document.SelectedObjects().Count == 0) RunAll(); else Run();
         });
 
-        internal void Run() => Guard("Format selection", () =>
+        internal void Run() => Run(false);
+        internal void RunAll() => Run(true);
+
+        private void Run(bool formatAll) => Guard(formatAll ? "Format all groups" : "Format selection", () =>
         {
             ResetTaps();
             if (_running) return;
@@ -169,6 +175,26 @@ namespace HopperFormat
             _detail.Clear();
             try
             {
+                if (formatAll)
+                {
+                    var all = FormatAllCapture.Capture(_document, _options);
+                    _log.AddRange(all.Log);
+                    var outcome = FormatAllSolver.Solve(all.Snapshot);
+                    var layout = outcome.Layout;
+                    foreach (var line in layout.Log)
+                        if (line.StartsWith("Skipped", StringComparison.Ordinal) || line.Contains("Unstable:", StringComparison.Ordinal)) _log.Add(line);
+                        else _detail.Add(line);
+                    if (!layout.Success) { Finish(layout.Diagnostic); return; }
+                    bool applied = FormatApplier.Apply(_document, layout.Moves, all.Objects, out var allStatus, true, true);
+                    if (applied)
+                    {
+                        LastMoves = layout.Moves.Count;
+                        if (outcome.Skipped > 0) allStatus += $" ({outcome.Skipped} skipped)";
+                        if (layout.Unstable) allStatus += " (not fully settled, FF again may adjust)";
+                    }
+                    Finish(allStatus);
+                    return;
+                }
                 var capture = SelectionSnapshot.Capture(_document, _options);
                 // Skips are always visible. Debug additionally includes solver details.
                 _log.AddRange(capture.Skipped);

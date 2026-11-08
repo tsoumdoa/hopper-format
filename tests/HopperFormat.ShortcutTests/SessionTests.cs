@@ -82,6 +82,46 @@ internal static class SessionTests
                 && f.Owner.OutputRefreshes == refreshes && f.ForwardedDown == 1
                 && f.Document.UndoUtil.Records.Count == count, "empty-selection keydown/keyup changed outputs, scheduled a refresh or captured F");
         });
+        Check(form, "Session empty-selection FF previews eligible groups, then formats all once with skipped count", f =>
+        {
+            var group = new GH_Group { NickName = "Pipeline", Document = f.Document };
+            group.ObjectIDs.AddRange(new[] { f.First.InstanceGuid,f.Second.InstanceGuid }); f.Document.Objects.Add(group);
+            var lockedNode = new TestComponent { InitialPivot = new PointF(900,900) };
+            var locked = new GH_Group { NickName = "Fixed [lock]", Document = f.Document }; locked.ObjectIDs.Add(lockedNode.InstanceGuid);
+            f.Document.Objects.AddRange(new IGH_DocumentObject[] { lockedNode,locked,f.Owner });
+            f.Document.Selection.Clear();
+            var refreshes = f.Owner.OutputRefreshes;
+            Tap(f.Canvas);
+            Assert(f.Session.Status == "Format all groups (1) · tap F again" && f.Document.UndoUtil.Creates == 0
+                && f.First.Attributes == null && f.Owner.OutputRefreshes == refreshes + 1, "all preview counted/measured/applied incorrectly");
+            Tap(f.Canvas);
+            Assert(f.Session.Status.StartsWith("Formatted all groups · ") && f.Session.Status.EndsWith(" (1 skipped)")
+                && f.Document.UndoUtil.Records.Single().Name == "Format all groups" && f.Session.LastMoves > 0
+                && f.Session.Log(false).Any(l => l.Contains("Skipped group 'Fixed [lock]'")) && f.ForwardedDown == 0,
+                "all FF failed: " + f.Session.Status);
+            Assert(lockedNode.Attributes.Pivot == lockedNode.InitialPivot && f.Owner.Attributes.Pivot == f.Owner.InitialPivot, "fixed objects moved");
+        });
+        Check(form, "Session Format all groups menu runs with or without selection and no-op records nothing", f =>
+        {
+            var group = new GH_Group { NickName = "Pipeline", Document = f.Document };
+            group.ObjectIDs.AddRange(new[] { f.First.InstanceGuid,f.Second.InstanceGuid }); f.Document.Objects.Add(group);
+            f.Session.RunAll();
+            Assert(f.Document.UndoUtil.Records.Single().Name == "Format all groups" && f.Session.LastMoves > 0, "selected menu failed");
+            f.Document.Selection.Clear(); f.Session.RunAll();
+            Assert(f.Session.Status == "Formatted all groups · 0 moves" && f.Session.LastMoves == 0
+                && f.Document.UndoUtil.Records.Count == 1, "empty menu not fixed");
+        });
+        Check(form, "Session empty selection with only locked groups gives hint only and passes F through", f =>
+        {
+            var group = new GH_Group { NickName = "[lock]", Document = f.Document }; group.ObjectIDs.Add(f.First.InstanceGuid);
+            f.Document.Objects.Add(group); f.Document.Selection.Clear();
+            var status = f.Session.Status; var log = f.Session.Log(true).ToArray(); var refreshes = f.Owner.OutputRefreshes;
+            Tap(f.Canvas);
+            var text = typeof(FeedbackPill).GetField("_text", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            Assert((string)text.GetValue(f.Pill) == "No groups to format" && f.Session.Status == status && f.Session.LastMoves == 0
+                && f.Session.Log(true).SequenceEqual(log) && f.Owner.OutputRefreshes == refreshes && f.ForwardedDown == 1
+                && f.First.Attributes == null && f.Document.UndoUtil.Creates == 0, "ineligible all check had side effects");
+        });
         Check(form, "Session pill factory failure keeps hook handlers and menu formatting working", f =>
         {
             Assert(f.PillAttempts == 1 && f.Session.Log(false).Count(line => line.Contains("injected pill failure")) == 1

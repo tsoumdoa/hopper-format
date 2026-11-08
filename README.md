@@ -10,8 +10,9 @@ context-menu item runs the same command.
 
 FF formats selected components and floating parameters, including sliders, panels,
 toggles, relays, and opaque clusters. Selected groups include their descendants.
-It never selects a containing group, uses a group under the cursor, or formats the
-document. Loose scribbles, markup, and the HopperFormat component are reported in
+It never selects a containing group or uses a group under the cursor. With nothing
+selected, FF formats all top-level groups (see **Format all** below).
+Loose scribbles, markup, and the HopperFormat component in a selection are reported in
 Log as skipped. Nodes with empty bounds after layout are reported and excluded.
 With no formattable selection, Status says `Select components to format`.
 
@@ -31,8 +32,8 @@ Any selected node belonging to a group whose nickname contains **[lock]**,
 case-insensitively, blocks the entire run. Membership through nested groups counts.
 The diagnostic names the locked group, and nothing moves.
 
-Each successful run with moves creates **one undo record**, named `Format selection`
-or `Format groups` when the selection contains a group.
+Each successful run with moves creates **one undo record**, named `Format selection`,
+`Format groups` when the selection contains a group, or `Format all groups`.
 Undo captures the original pivots before moving anything. Applied pivots are
 verified; a failed apply restores all original pivots and records no undo event.
 An already formatted selection reports `Already formatted` and creates no record.
@@ -51,9 +52,24 @@ uses the ordinary layout rules and its label follows. Overlapping membership in
 unrelated groups refuses the run and names the object. A selected **[lock]** group,
 a node inside one, or a locked descendant blocks formatting without moving anything.
 
-**Format all** (FF with nothing selected, formatting every group) is coming later. After formatting groups
-managed by HopperGroup, tap **Refresh** on HopperGroup; its automatic handshake is
-also coming later.
+## Format all
+
+Clear the selection and tap **FF** to format every top-level group, including label
+groups. The first tap previews the eligible group count. Each group formats its
+contents independently, then the visible boxes tidy in place: nearby tops and left
+edges snap together, small gaps even to 50 units horizontally or 40 vertically,
+and larger gaps stay. Collisions push groups right or their rows down; clearance
+also accounts for obstacles just below a group. Ungrouped objects never move.
+
+Locked groups and groups with overlapping membership, contracted cycles or failed
+inner formatting stay fixed as obstacles and are reported in Log. Ungrouped nodes,
+notes, markup and HopperFormat itself are obstacles too. The component's
+**Format all groups** menu item runs the same action whatever is selected. With no
+eligible group, F passes through and the pill says `No groups to format`, preserving
+the last run's outputs. One Undo restores the entire format-all run.
+
+After formatting groups managed by **HopperGroup**, tap **Refresh** on HopperGroup
+before dragging members. Its automatic handshake is coming in a later stage.
 
 ## Component
 
@@ -86,7 +102,7 @@ normal behavior. Both F taps are consumed; a held key does not count as two taps
 - Rhino **8.20+**, running **.NET 8**, with Grasshopper.
 - On Windows, if Rhino runs on .NET Framework, run **SetDotNetRuntime**, choose
   **.NET Core**, and restart Rhino.
-- The **FF shortcut is Windows-only**. The **Format selection menu item works
+- The **FF shortcut is Windows-only**. The **Format selection and Format all groups menu items work
   everywhere** Grasshopper runs on .NET 8.
 - After formatting members of groups managed by **HopperGroup**, tap **Refresh**
   on HopperGroup before continuing to drag members. The automatic handshake is

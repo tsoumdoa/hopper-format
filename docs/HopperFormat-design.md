@@ -30,7 +30,7 @@ What it borrows, and from where:
 
 ### The FF gesture
 
-Tap F twice with the canvas focused. Same hook, timing window, and feedback pill as GG and DD. **The target is exactly the selection.** FF never resolves to an enclosing group, never uses the group under the cursor, and never formats the whole document.
+Tap F twice with the canvas focused. Same hook, timing window, and feedback pill as GG and DD. With a selection, **the target is exactly the selection.** FF never resolves to an enclosing group or uses the group under the cursor. With nothing selected, it formats all top-level groups and leaves ungrouped objects fixed.
 
 - Selected components and floating params are laid out as one function (phase one).
 - Each selected group has its contents formatted bottom-up; two or more selected units (groups or loose nodes) are then arranged by dataflow (5.9).
@@ -42,7 +42,7 @@ The pill names the target after the first tap, for example `Format selection (14
 
 With **nothing selected**, FF formats every group in the document (5.9.4): each group's contents are formatted, then the groups are tidied in place. Ungrouped objects never move.
 
-- **Gesture:** the same F double-tap, timing window and pill as FF. The first tap names the target before anything moves, e.g. `Format all groups (12) · tap F again`. With no formattable group, the pill says `No groups to format`.
+- **Gesture:** the same F double-tap, timing window and pill as FF. The first tap names the target before anything moves, e.g. `Format all groups (12) · tap F again`; the count excludes locked groups and groups rejected by the read-only ownership/topology preflight. With no formattable group, F passes through to the host and the pill says `No groups to format`. This hint leaves Status, Moves and Log unchanged and schedules no output refresh.
 - **Undo:** one record named `Format all groups`, reverted by a single Undo.
 - **Menu:** the component menu offers the same action as `Format all groups`, whatever is selected.
 - **Hook change:** the F registration now also captures F when the selection is empty. This replaces the earlier F-then-G idea. That idea needed two-key sequences in the shared hook, and clashed with HopperGroup's G whenever something was selected.
@@ -243,15 +243,21 @@ Used when FF's selection holds two or more top-level units, where a unit is a gr
 
 #### 5.9.4 Arranging groups with format all: tidy in place
 
-Format all (FF with nothing selected) targets every top-level group in the document. It keeps each group roughly where the user put it.
+Format all (FF with nothing selected, or the `Format all groups` menu item with any selection) targets every top-level group: a group not contained in another group. Top-level label groups are targets too; their visible boxes take part in tidy. Set `GX = GroupGapX = 50` and `GY = GroupGapY = 40`.
 
-1. Format every target group's contents (5.9.2), each anchored at its own top-left.
-2. **Rows.** Sort groups by top. A group joins the current row when its top is within `RowSnap` of the row's top; `RowSnap = min(GroupGapY, 0.25 × the shorter height)`. Every group in a row takes the row's smallest top, so box edges line up.
-3. **Columns.** Across rows, left edges within `GroupGapX / 2` of each other snap to their smallest value.
-4. **Gaps.**
-   - Within a row, in left-to-right order, a gap smaller than `2 × GroupGapX` becomes exactly `GroupGapX`, pushing later groups right. Larger gaps are intentional separation and are kept.
-   - Rows are handled the same way top to bottom with `GroupGapY`; a row moves as a whole.
-5. **Obstacles.** Ungrouped objects, `[lock]` groups and skipped groups **never move**; they are fixed rectangles. If a group would overlap one, push it right within its row (or push its row down) until it clears by the group gap.
+First format each target independently as a single-group selection (5.9.2), anchored on its own units envelope, with the same note rules. Do not run the dataflow arrangement between roots. Each formatted visible group box, including measured padding, becomes its tidy box. A locked group, a group with overlapping membership or a contracted cycle, or a group whose inner formatting fails is skipped, logged with its reason, and kept fixed as an obstacle. Continue with other groups; refuse the whole run only when none can be formatted. Every ungrouped top-level object (including components, params, scribbles, markup and HopperFormat itself) is also a fixed obstacle.
+
+Run these deterministic tidy steps:
+
+1. **Rows.** Sort target boxes by `(top, left, id)`. Greedily open a row with the first box. A box joins the current row when `|top − rowTop| <= min(GY, 0.25 × min(box height, height of the row's first box))`; otherwise open another row. Every member takes the row's smallest top.
+2. **Columns.** Sort all target lefts ascending. Greedily cluster lefts within `GX / 2` of the current cluster's smallest left. Every member takes that smallest left.
+3. **Placement in reading order.** Process rows top to bottom and members left to right (id breaks ties). The placed set `P` starts with all obstacles.
+   - **Vertical, per row.** Start at snapped row top `t`. For each member `m`, find maximum bottom `a` among items in `P` that overlap its snapped horizontal extent and have `top < t`. With none, `t_m = t`. Otherwise, `t_m = a + GY` when `t − a < 2·GY`, or `t_m = t` for larger gaps. The new row top is `max(t_m)`; move the entire row together. Thus small vertical gaps become exactly GY where the other members allow it, and larger gaps stay.
+   - **Horizontal, per member.** Start at snapped left `x`. Find maximum right `b` among items in `P` that overlap the member's new vertical extent and have `left < x`. If one exists and `x − b < 2·GX`, set `x = b + GX`. Then, while any item in `P` overlaps the member's **GY-inflated vertical extent** `[top − GY, bottom + GY)` and has horizontal clearance below GX, push the member right to that item's `right + GX` (past the rightmost such item when several collide). Repeat until clear, then add the member to `P`. Clearance is enforced in both vertical directions by pushing right: an obstacle below the member with a vertical gap below GY must also clear by GX horizontally. A gap of exactly GX or GY is allowed. Collision handling never moves a group upward.
+4. **Loop.** Repeat steps 1–3 from the resulting boxes until nothing moves, at most five passes. If the fifth pass still moves anything, keep that result and log `Unstable: format-all tidy did not settle within five passes; kept the last result.`
+5. **Move direction.** Except for snapping (at most GX/2 horizontally or the row snap vertically) and gap evening (a gap under 2× becomes exactly 1×), groups move only right or down.
+
+Compose each root's final translation with its inner formatting into one pivot per descendant. Non-node members follow as in stage 1, and every nested group box receives the same outer translation. Exact box snapping can give a group's integer pivots a common fractional translation; subsequent inner solves preserve that common pivot frame to retain idempotence. Ignore pivot differences within two host `PointF` ULPs, allowing for the float arithmetic used to remeasure group bounds. Apply once with the verified undo/rollback protocol in section 6. Status and pill read `Formatted all groups · N moves`, with `(K skipped)` when applicable; a no-op creates no undo record.
 
 #### 5.9.5 Guarantees for groups
 
@@ -293,7 +299,7 @@ Sequence on the second tap:
 4. **Build one pivot undo action per moved member before writing any pivot.** Pivot actions capture the pivot at construction, so building them afterwards would record the formatted state.
 5. Write pivots, call `ExpireLayout` on each moved object, then `ExpireCaches` on every affected group so group bounds refresh.
 6. Remeasure. If any member's applied pivot is not what the solver emitted, revert every pivot and record nothing.
-7. Add the actions to the one record named `Format selection` or `Format groups`, refresh the canvas, and update the pill (for example, `Formatted groups · 11 moves`). The HopperGroup handshake is a later stage, described below.
+7. Add the actions to the one record named `Format selection`, `Format groups` or `Format all groups`, refresh the canvas, and update the pill (for example, `Formatted groups · 11 moves`). The HopperGroup handshake is a later stage, described below.
 
 **HopperGroup handshake.** HopperGroup keeps settled positions and exit outlines from the last drop, and treats any other movement as an external move to reconcile on the next drag. That reconciliation could read a formatted member as having left its group.
 

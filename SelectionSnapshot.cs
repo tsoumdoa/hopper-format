@@ -41,10 +41,12 @@ namespace HopperFormat
             ? component.Params.Output.ToArray() : new[] { (IGH_Param)obj };
         private static Vec2 Relative(PointF point, RectangleF bounds) => new Vec2(point.X - bounds.X, point.Y - bounds.Y);
 
-        internal static SelectionSnapshot Capture(GH_Document document, Options options)
+        internal static SelectionSnapshot Capture(GH_Document document, Options options) => Capture(document, options, document.SelectedObjects());
+
+        internal static SelectionSnapshot Capture(GH_Document document, Options options, IEnumerable<IGH_DocumentObject> selection)
         {
             var capture = new SelectionSnapshot();
-            var selected = document.SelectedObjects().ToArray();
+            var selected = selection.ToArray();
             var selectedGroups = selected.OfType<GH_Group>().ToArray();
             capture.ContainsGroups = selectedGroups.Length > 0;
             var byId = document.Objects.ToDictionary(o => o.InstanceGuid);
