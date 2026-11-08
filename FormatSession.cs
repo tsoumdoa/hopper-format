@@ -124,7 +124,7 @@ namespace HopperFormat
                 && !CanvasShortcutHook.HasReservedShortcut(_canvas, key);
                 if (!scope) return;
                 var selected = _document.SelectedObjects();
-                eligible = selected.Any(SelectionSnapshot.IsNode);
+                eligible = selected.Any(o => SelectionSnapshot.IsNode(o) || o is Grasshopper.Kernel.Special.GH_Group);
                 if (!eligible)
                 {
                     // Hint only: eligibility checks must preserve the last run's outputs.
@@ -144,7 +144,7 @@ namespace HopperFormat
                 > Math.Max(MinimumTapWindowMilliseconds, SystemInformation.DoubleClickTime))
             {
                 _firstTap = timestamp;
-                Show($"Format selection ({_document.SelectedObjects().Count(SelectionSnapshot.IsNode)} objects) · tap F again");
+                Show($"Format selection ({_document.SelectedObjects().Count(o => SelectionSnapshot.IsNode(o) || o is Grasshopper.Kernel.Special.GH_Group)} objects) · tap F again");
                 return;
             }
             _firstTap = null;
@@ -172,15 +172,16 @@ namespace HopperFormat
                 var capture = SelectionSnapshot.Capture(_document, _options);
                 // Skips are always visible. Debug additionally includes solver details.
                 _log.AddRange(capture.Skipped);
+                if (capture.Diagnostic != null) { Finish(capture.Diagnostic); return; }
                 var locked = GroupMembership.LockedDiagnostic(_document, capture.CandidateIds);
                 if (locked != null) { Finish(locked); return; }
                 if (capture.Objects.Count == 0) { Finish("Select components to format"); return; }
-                var result = _solve(capture.Snapshot);
+                var result = capture.Hierarchy == null ? _solve(capture.Snapshot) : HierarchySolver.Solve(capture.Hierarchy);
                 foreach (var line in result.Log)
                     if (result.Unstable && line.StartsWith("Unstable:", StringComparison.Ordinal)) _log.Add(line);
                     else _detail.Add(line);
                 if (!result.Success) { Finish(result.Diagnostic); return; }
-                var success = FormatApplier.Apply(_document, result.Moves, capture.Objects, out var status);
+                var success = FormatApplier.Apply(_document, result.Moves, capture.Objects, out var status, capture.ContainsGroups);
                 if (success) LastMoves = result.Moves.Count;
                 if (success && result.Unstable) status += " (not fully settled, FF again may adjust)";
                 Finish(status);

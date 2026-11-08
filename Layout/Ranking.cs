@@ -82,10 +82,16 @@ namespace HopperFormat.Layout
                 {
                     // A wide orphan can be farther from its column's real nodes on
                     // the left after right alignment. Recover a formatted column
-                    // by its common right edge; the caller must verify the complete
-                    // rounded geometry before accepting these recovered ranks.
-                    var aligned = main.Where(n => Math.Abs(n.CurrentTop.X + n.Width - orphan.CurrentTop.X - orphan.Width) < 1)
-                        .OrderBy(n => Math.Abs(n.CurrentTop.X + n.Width - orphan.CurrentTop.X - orphan.Width))
+                    // by its common right edge, or left edge for group-only columns.
+                    // The caller must verify the complete rounded geometry.
+                    double Distance(Node n)
+                    {
+                        bool groupsOnly = orphan.Kind == NodeKind.Group &&
+                            main.Where(m => assigned[m.Id] == assigned[n.Id]).All(m => m.Kind == NodeKind.Group);
+                        return Math.Abs(n.CurrentTop.X - orphan.CurrentTop.X + (groupsOnly ? 0 : n.Width - orphan.Width));
+                    }
+                    var aligned = main.Where(n => Distance(n) < 1)
+                        .OrderBy(Distance)
                         .ThenBy(n => n.CurrentTop.Y).ThenBy(n => n.CurrentTop.X).ThenBy(n => n.Id).FirstOrDefault();
                     if (aligned != null) nearest = aligned;
                 }

@@ -215,9 +215,9 @@ Phase one formats one flat selection. Phase two adds groups at two levels. **Ins
 
 Groups are processed in post-order: children before parents.
 
-1. Lay out the group's direct members with steps 1–6. The anchor is the group's current content top-left, so the group stays where it is while its size changes.
+1. Lay out the group's units with steps 1–6, anchored at their current envelope's top-left: direct nodes, see-through label nodes and real child-group boxes. Non-node rectangles do not contribute to this anchor. Non-node members are never formatted: they keep their absolute positions during inner formatting, except that a member entirely below the old units envelope (top ≥ old bottom) follows positive bottom-edge growth, and a member entirely right of it (left ≥ old right) follows positive right-edge growth (both apply at the bottom-right). Above, left and overlapping members otherwise stay put; any overlap with formatted nodes is logged as `Note '<label>' overlaps formatted nodes in '<group>'` without failing. All non-node members translate with their containing group when it moves at an outer level. On a second run there is no growth, so they stay put.
 2. A child group takes part in its parent's layout as one **RigidGroup** node:
-   - Its **size** is the child's formatted member envelope plus the child's padding. The padding is measured per side from its current bounds minus its current member envelope, so it is never assumed.
+   - Its **size** is the child's formatted member envelope plus the child's padding. The padding is measured per side from its current bounds minus its current member envelope, so it is never assumed. This visible envelope includes child-group boxes, including label boxes, and non-node rectangles; labels still never become layout units. Keeping the visible envelope separate from the see-through layout envelope preserves both measured Grasshopper bounds and phase-one coordinates.
    - It has one **input port** per member receiving a wire from outside the child, at that member's input-grip y relative to the child box top.
    - It has one **output port** per member sending a wire out of the child, at that member's output-grip y.
    - Wires stay port-level, as in phase one.
@@ -234,7 +234,7 @@ Used when FF's selection holds two or more top-level units, where a unit is a gr
   - Between two groups, an alignment link makes their **tops** equal instead of their grips.
   - A column that holds only groups is **left-aligned**.
   - Any link or column involving a loose node keeps the phase-one rules: grip alignment and right-aligned columns.
-- **No lanes between groups:** long wires between groups get no reserved lanes. Grasshopper draws wires above group boxes, so they read as crossing over a group, not plugged into it. Virtual nodes are still used for crossing reduction.
+- **No lanes at group boundaries:** long wires with a RigidGroup at either end get no reserved lanes. Grasshopper draws wires above group boxes, so they read as crossing over a group, not plugged into it. Virtual nodes are still used for crossing reduction.
 - **Anchor:** the selection's top-left. Nothing outside the selection moves.
 - A selection that is exactly one group formats that group's contents only.
 
@@ -290,7 +290,7 @@ Sequence on the second tap:
 4. **Build one pivot undo action per moved member before writing any pivot.** Pivot actions capture the pivot at construction, so building them afterwards would record the formatted state.
 5. Write pivots, call `ExpireLayout` on each moved object, then `ExpireCaches` on every affected group so group bounds refresh.
 6. Remeasure. If any member's applied pivot is not what the solver emitted, revert every pivot and record nothing.
-7. Add the actions to a new record named `Format 'Name'`, raise the HopperGroup handshake, refresh the canvas, update the pill: `Formatted 'Inputs' · 11 moves`.
+7. Add the actions to the one record named `Format selection` or `Format groups`, refresh the canvas, and update the pill (for example, `Formatted groups · 11 moves`). The HopperGroup handshake is a later stage, described below.
 
 **HopperGroup handshake.** HopperGroup keeps settled positions and exit outlines from the last drop, and treats any other movement as an external move to reconcile on the next drag. That reconciliation could read a formatted member as having left its group.
 

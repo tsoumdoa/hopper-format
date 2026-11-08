@@ -36,13 +36,14 @@ namespace HopperFormat.Layout
                 foreach (var node in graph.Nodes)
                 {
                     raw[node.Id] = new Vec2(anchor.X, y);
-                    y += node.Height + graph.Options.GapY;
+                    y += node.Height + Placement.UnconnectedGap(graph, node);
                 }
             }
             else
             {
                 double y = anchor.Y;
                 double? previousBottom = null;
+                var previous = new List<Node>();
                 foreach (var island in islands)
                 {
                     double currentMin = island.Min(n => n.CurrentTop.Y);
@@ -50,14 +51,15 @@ namespace HopperFormat.Layout
                     // Recover near-tight island contacts without accumulating their
                     // rounding errors across every island in the selection.
                     if (previousBottom.HasValue &&
-                        Math.Abs(currentMin - previousBottom.Value - 2 * graph.Options.GapY) < 1)
+                        Math.Abs(currentMin - previousBottom.Value - Placement.IslandGap(graph, previous, island)) < 1)
                         y = currentMin;
                     var placed = Reconstruct(graph, island, ranks, anchor.X);
                     if (placed == null) return false;
                     double minX = island.Min(n => placed[n.Id].X), minY = island.Min(n => placed[n.Id].Y);
                     foreach (var node in island)
                         raw[node.Id] = new Vec2(placed[node.Id].X + anchor.X - minX, placed[node.Id].Y + y - minY);
-                    y = island.Max(n => raw[n.Id].Y + n.Height) + 2 * graph.Options.GapY;
+                    y = island.Max(n => raw[n.Id].Y + n.Height) + Placement.IslandGap(graph, island, islands.SkipWhile(i => i != island).Skip(1).FirstOrDefault() ?? new List<Node>());
+                    previous = island;
                     previousBottom = island.Max(n => n.CurrentTop.Y + n.Height);
                 }
             }
@@ -83,6 +85,7 @@ namespace HopperFormat.Layout
                 if (!ids.Contains(edge.From) || ranks[edge.To] - ranks[edge.From] <= 1) continue;
                 var from = graph.ById[edge.From];
                 var to = graph.ById[edge.To];
+                if (from.Kind == NodeKind.Group || to.Kind == NodeKind.Group) continue;
                 double y = from.CurrentTop.Y + from.Outputs[edge.FromPort].Y;
                 if (Math.Abs(y - to.CurrentTop.Y - to.Inputs[edge.ToPort].Y) > 1) continue;
                 if (!members.Any(n => ranks[n.Id] > ranks[edge.From] && ranks[n.Id] < ranks[edge.To] &&
@@ -119,8 +122,9 @@ namespace HopperFormat.Layout
             {
                 if (!items.TryGetValue(edge.From, out var from)) continue;
                 var to = items[edge.To];
-                double y = from.Node.CurrentTop.Y + from.Node.Outputs[edge.FromPort].Y;
-                double targetY = to.Node.CurrentTop.Y + to.Node.Inputs[edge.ToPort].Y;
+                bool groupLink = Placement.GroupLink(from.Node, to.Node);
+                double y = from.Node.CurrentTop.Y + (groupLink ? 0 : from.Node.Outputs[edge.FromPort].Y);
+                double targetY = to.Node.CurrentTop.Y + (groupLink ? 0 : to.Node.Inputs[edge.ToPort].Y);
                 if (Math.Abs(y - targetY) > 1) continue;
                 if (to.Column - from.Column > 1)
                 {

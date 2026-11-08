@@ -124,8 +124,12 @@ namespace Grasshopper.Kernel
         internal readonly List<IGH_DocumentObject> Objects = new List<IGH_DocumentObject>();
         internal readonly List<IGH_DocumentObject> Selection = new List<IGH_DocumentObject>();
         internal readonly TestUndo UndoUtil = new TestUndo();
-        internal List<IGH_DocumentObject> SelectedObjects() => FailSelection
-            ? throw new InvalidOperationException("injected selection failure") : Selection.ToList();
+        internal List<IGH_DocumentObject> SelectedObjects()
+        {
+            if (FailSelection) throw new InvalidOperationException("injected selection failure");
+            foreach (var group in Objects.OfType<Grasshopper.Kernel.Special.GH_Group>()) group.Document = this;
+            return Selection.ToList();
+        }
     }
     internal sealed class TestUndoRecord
     {
@@ -161,6 +165,17 @@ namespace Grasshopper.Kernel.Special
     {
         internal readonly List<Guid> ObjectIDs = new List<Guid>();
         internal int CacheExpirations;
+        internal Grasshopper.Kernel.GH_Document Document;
+        internal float PadLeft = 10, PadTop = 20, PadRight = 12, PadBottom = 14;
+        internal override void Layout()
+        {
+            if (Document == null) { base.Layout(); return; }
+            var members = Document.Objects.Where(o => ObjectIDs.Contains(o.InstanceGuid) && o.Attributes != null).ToArray();
+            if (members.Length == 0) { Attributes.Bounds = RectangleF.Empty; return; }
+            var bounds = members.Select(o => o.Attributes.Bounds).Aggregate(RectangleF.Union);
+            Attributes.Bounds = RectangleF.FromLTRB(bounds.Left - PadLeft, bounds.Top - PadTop,
+                bounds.Right + PadRight, bounds.Bottom + PadBottom);
+        }
         internal void ExpireCaches() => CacheExpirations++;
     }
 }

@@ -3,13 +3,22 @@ using System.Collections.Generic;
 
 namespace HopperFormat.Layout
 {
+    public readonly struct Box
+    {
+        public readonly double X, Y, Width, Height;
+        public double Right => X + Width;
+        public double Bottom => Y + Height;
+        public Box(double x, double y, double width, double height)
+        { X = x; Y = y; Width = width; Height = height; }
+    }
+
     public readonly struct Vec2
     {
         public readonly double X, Y;
         public Vec2(double x, double y) { X = x; Y = y; }
     }
 
-    public enum NodeKind { Component, Param, Panel }
+    public enum NodeKind { Component, Param, Panel, Group }
 
     public sealed class Node
     {
@@ -52,6 +61,8 @@ namespace HopperFormat.Layout
         public double GapX { get; set; } = 30;
         public double GapY { get; set; } = 16;
         public double StackGap { get; set; } = 6;
+        public double GroupGapX { get; set; } = 50;
+        public double GroupGapY { get; set; } = 40;
         public bool ReturnConstraint { get; set; } = true;
     }
 
@@ -76,6 +87,7 @@ namespace HopperFormat.Layout
         public string Diagnostic { get; set; } = string.Empty;
         public Vec2 Anchor { get; set; }
         public IReadOnlyDictionary<Guid, Vec2> Tops { get; set; } = new Dictionary<Guid, Vec2>();
+        public IReadOnlyDictionary<Guid, Box> GroupBoxes { get; set; } = new Dictionary<Guid, Box>();
         public int Rounds { get; set; }
         public IReadOnlyList<Move> Moves { get; set; } = Array.Empty<Move>();
         public IReadOnlyList<string> Log { get; set; } = Array.Empty<string>();

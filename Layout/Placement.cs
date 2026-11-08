@@ -11,6 +11,14 @@ namespace HopperFormat.Layout
         {
             var columns = ordering.Columns.Select(c => new List<OrderItem>(c)).ToArray();
             var segments = ordering.Segments.Select(c => new List<Segment>(c)).ToArray();
+            // Keep group long edges in Ordering, but never reserve their lanes.
+            var unlaned = new HashSet<Edge>(graph.Edges.Where(e =>
+                ranks.ContainsKey(e.From) && ranks[e.To] - ranks[e.From] > 1 &&
+                (graph.ById[e.From].Kind == NodeKind.Group || graph.ById[e.To].Kind == NodeKind.Group)));
+            var virtuals = new HashSet<OrderItem>(segments.SelectMany(c => c).Where(s => unlaned.Contains(s.Edge))
+                .SelectMany(s => new[] { s.From, s.To }).Where(i => i.Virtual));
+            foreach (var column in columns) column.RemoveAll(virtuals.Contains);
+            foreach (var pair in segments) pair.RemoveAll(s => unlaned.Contains(s.Edge));
             Dictionary<OrderItem, Segment> predecessor;
             while (true)
             {
@@ -38,7 +46,8 @@ namespace HopperFormat.Layout
                 if (predecessor.TryGetValue(item, out var segment))
                 {
                     roots.Add(item, roots[segment.From]);
-                    offsets.Add(item, offsets[segment.From] + segment.FromY - segment.ToY);
+                    offsets.Add(item, offsets[segment.From] +
+                        (GroupLink(segment.From.Node, item.Node) ? 0 : segment.FromY - segment.ToY));
                 }
                 else
                 {
@@ -170,8 +179,9 @@ namespace HopperFormat.Layout
                 if (item.Virtual || graph.In[item.Node.Id].Count != 0 || graph.Out[item.Node.Id].Count == 0) continue;
                 var desired = graph.Out[item.Node.Id].Select(e => {
                     var target = realItems[e.To];
-                    return blockOf[target].Top + offsets[target] + target.Node.Inputs[e.ToPort].Y -
-                        item.Node.Outputs[e.FromPort].Y - offsets[item];
+                    return blockOf[target].Top + offsets[target] +
+                        (GroupLink(item.Node, target.Node) ? 0 : target.Node.Inputs[e.ToPort].Y -
+                        item.Node.Outputs[e.FromPort].Y) - offsets[item];
                 }).OrderBy(y => y).ToArray();
                 double limit = block.Below.Select(c => c.Block.Top - c.Distance).DefaultIfEmpty(double.PositiveInfinity).Min();
                 block.Top = Math.Max(block.Top, Math.Min(desired[(desired.Length - 1) / 2], limit));
@@ -179,13 +189,17 @@ namespace HopperFormat.Layout
 
             var tops = new Dictionary<Guid, Vec2>();
             double left = anchorX;
-            foreach (var column in columns)
+            for (int c = 0; c < columns.Length; c++)
             {
+                var column = columns[c];
                 double width = column.Where(i => !i.Virtual).Select(i => i.Node.Width).DefaultIfEmpty(0).Max();
+                bool groupsOnly = column.Where(i => !i.Virtual).All(i => i.Node.Kind == NodeKind.Group);
                 foreach (var item in column.Where(i => !i.Virtual))
-                    tops.Add(item.Node.Id, new Vec2(left + width - item.Node.Width,
+                    tops.Add(item.Node.Id, new Vec2(left + (groupsOnly ? 0 : width - item.Node.Width),
                         blockOf[item].Top + offsets[item]));
-                left += width + graph.Options.GapX;
+                bool groupGap = column.Any(i => !i.Virtual && i.Node.Kind == NodeKind.Group) ||
+                    c + 1 < columns.Length && columns[c + 1].Any(i => !i.Virtual && i.Node.Kind == NodeKind.Group);
+                left += width + (groupGap ? graph.Options.GroupGapX : graph.Options.GapX);
             }
             return tops;
         }
@@ -199,6 +213,7 @@ namespace HopperFormat.Layout
 
         internal static double Gap(Graph graph, Node a, Node b)
         {
+            if (a.Kind == NodeKind.Group || b.Kind == NodeKind.Group) return graph.Options.GroupGapY;
             if (a.Widget && b.Widget)
             {
                 var successorsA = graph.Out[a.Id].Select(e => e.To).Distinct().ToArray();
@@ -208,6 +223,18 @@ namespace HopperFormat.Layout
             }
             return graph.Options.GapY;
         }
+
+        internal static bool GroupLink(Node a, Node b) => a.Kind == NodeKind.Group && b.Kind == NodeKind.Group;
+
+        internal static double UnconnectedGap(Graph graph, Node node)
+        {
+            int index = Array.IndexOf(graph.Nodes, node);
+            return node.Kind == NodeKind.Group || index + 1 < graph.Nodes.Length && graph.Nodes[index + 1].Kind == NodeKind.Group
+                ? graph.Options.GroupGapY : graph.Options.GapY;
+        }
+
+        internal static double IslandGap(Graph graph, IEnumerable<Node> a, IEnumerable<Node> b) =>
+            a.Concat(b).Any(n => n.Kind == NodeKind.Group) ? graph.Options.GroupGapY : 2 * graph.Options.GapY;
 
         private sealed class Constraint
         {

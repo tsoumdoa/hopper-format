@@ -12,7 +12,7 @@ internal static class HostAdapterTests
     private static int _failures;
     internal static int Run()
     {
-        Check("Snapshot keeps only selected nodes and reports every skipped object", () =>
+        Check("Snapshot includes selected group descendants and reports skipped loose objects", () =>
         {
             var document = new GH_Document();
             var selected = new TestComponent { NickName = "", Name = "Fallback name" };
@@ -25,13 +25,12 @@ internal static class HostAdapterTests
             document.Objects.AddRange(new IGH_DocumentObject[] { selected, unselected, group, empty, scribble, formatter });
             document.Selection.AddRange(new IGH_DocumentObject[] { selected, group, empty, scribble, formatter });
             var capture = SelectionSnapshot.Capture(document, new Options());
-            Assert(capture.Objects.Keys.SequenceEqual(new[] { selected.InstanceGuid }), "selection expanded or included excluded objects");
-            Assert(capture.Skipped.Count == 4 && capture.Skipped.Any(line => line.Contains("GH_Group 'Selected group'"))
-                && capture.Skipped.Any(line => line.Contains("Empty param") && line.Contains("empty bounds"))
+            Assert(capture.Objects.Keys.ToHashSet().SetEquals(new[] { selected.InstanceGuid, unselected.InstanceGuid }), "group descendants missing or excluded objects included");
+            Assert(capture.Skipped.Count == 3 && capture.Skipped.Any(line => line.Contains("Empty param") && line.Contains("empty bounds"))
                 && capture.Skipped.Any(line => line.Contains("TestObject 'Scribble'"))
                 && capture.Skipped.Any(line => line.Contains("HopperFormatComponent")), "some skipped objects were silent");
-            Assert(capture.Snapshot.Nodes.Single().Label == "Fallback name" && selected.Attributes.Layouts == 1
-                && empty.Attributes.Layouts == 1 && unselected.Attributes == null, "attributes/layout/fallback label incorrect");
+            Assert(capture.Snapshot.Nodes.Single(n => n.Id == selected.InstanceGuid).Label == "Fallback name" && selected.Attributes.Layouts == 1
+                && empty.Attributes.Layouts == 1 && unselected.Attributes.Layouts == 1 && capture.Hierarchy.Groups.Count == 1, "attributes/layout/fallback label incorrect");
         });
         Check("Snapshot measures bounds offsets, real grips, topology and external hints", () =>
         {
@@ -176,7 +175,7 @@ internal static class HostAdapterTests
             Assert(FormatApplier.Apply(document, Array.Empty<Move>(), objects, out var status) && status == "Already formatted"
                 && document.UndoUtil.Creates == 0 && document.UndoUtil.Records.Count == 0, "no-op generated undo");
         });
-        return _failures;
+        return _failures + GroupHostTests.Run();
     }
 
     private static (GH_Document, Dictionary<Guid, IGH_DocumentObject>, List<Move>) ApplyFixture()

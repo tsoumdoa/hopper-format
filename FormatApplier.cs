@@ -10,7 +10,7 @@ namespace HopperFormat
     internal static class FormatApplier
     {
         internal static bool Apply(GH_Document document, IReadOnlyList<Move> moves,
-            IReadOnlyDictionary<Guid, IGH_DocumentObject> objects, out string status)
+            IReadOnlyDictionary<Guid, IGH_DocumentObject> objects, out string status, bool containsGroups = false)
         {
             status = "Already formatted";
             if (moves.Count == 0) return true;
@@ -18,11 +18,12 @@ namespace HopperFormat
             var originals = movedObjects.ToDictionary(obj => obj, obj => obj.Attributes.Pivot);
             var groups = GroupMembership.Ancestors(document, moves.Select(move => move.Id));
             // Pivot undo actions snapshot their positions in their constructors.
-            var record = document.UndoUtil.CreatePivotEvent("Format selection", movedObjects);
+            var record = document.UndoUtil.CreatePivotEvent(containsGroups ? "Format groups" : "Format selection", movedObjects);
             try
             {
                 foreach (var move in moves)
                     SetPivot(objects[move.Id], new PointF((float)move.Pivot.X, (float)move.Pivot.Y));
+                foreach (var group in groups) group.ExpireCaches();
                 foreach (var move in moves)
                 {
                     var pivot = objects[move.Id].Attributes.Pivot;
@@ -30,7 +31,6 @@ namespace HopperFormat
                         || !float.IsFinite(pivot.X) || !float.IsFinite(pivot.Y))
                         throw new InvalidOperationException($"Applied pivot mismatch for '{SelectionSnapshot.Label(objects[move.Id])}'");
                 }
-                foreach (var group in groups) group.ExpireCaches();
                 if (document.UndoUtil.RecordEvent(record) == Guid.Empty)
                     throw new InvalidOperationException("Grasshopper did not record the format undo event");
             }
@@ -48,7 +48,7 @@ namespace HopperFormat
                 Grasshopper.Instances.RedrawCanvas();
                 return false;
             }
-            status = $"Formatted selection · {moves.Count} moves";
+            status = $"Formatted {(containsGroups ? "groups" : "selection")} · {moves.Count} moves";
             Grasshopper.Instances.RedrawCanvas();
             return true;
         }

@@ -8,18 +8,17 @@ parameters, focus the canvas, and tap **F twice**. The first tap previews the
 selection count; the second formats it. The component's **Format selection**
 context-menu item runs the same command.
 
-This MVP formats **only selected components and floating parameters**, including
-sliders, panels, toggles, relays, and opaque clusters. It never selects a containing
-group, uses a group under the cursor, or formats the document. The HopperFormat
-component, selected groups, scribbles, markup, and other objects stay untouched
-and appear in Log as skipped. Nodes with empty bounds after layout are also
-reported and excluded. With no formattable selection, Status says
-`Select components to format`.
+FF formats selected components and floating parameters, including sliders, panels,
+toggles, relays, and opaque clusters. Selected groups include their descendants.
+It never selects a containing group, uses a group under the cursor, or formats the
+document. Loose scribbles, markup, and the HopperFormat component are reported in
+Log as skipped. Nodes with empty bounds after layout are reported and excluded.
+With no formattable selection, Status says `Select components to format`.
 
 Wires determine columns and ordering, including hidden wires. Incoming and outgoing
 wires to objects outside the selection provide alignment hints. Widget parameters
-without sources stack near their consumers. This release does not support option
-tags, rigid nested-group layout, ownership validation, or continuous formatting.
+without sources stack near their consumers. Option tags other than `[lock]` and
+continuous formatting remain deferred.
 
 Floating input parameters with an external source and internal consumers stay in
 the first column. Floating output parameters with internal sources and no internal
@@ -32,11 +31,29 @@ Any selected node belonging to a group whose nickname contains **[lock]**,
 case-insensitively, blocks the entire run. Membership through nested groups counts.
 The diagnostic names the locked group, and nothing moves.
 
-Each successful run with moves creates **one undo record**, named `Format selection`.
+Each successful run with moves creates **one undo record**, named `Format selection`
+or `Format groups` when the selection contains a group.
 Undo captures the original pivots before moving anything. Applied pivots are
 verified; a failed apply restores all original pivots and records no undo event.
 An already formatted selection reports `Already formatted` and creates no record.
 Formatting does not recompute component geometry; output updates are scheduled.
+
+## Formatting groups
+
+Select one or more groups and tap **FF**. One selected group formats its contents
+bottom-up. Several groups and loose selected nodes are also arranged by dataflow,
+with group boxes separated by 50 units horizontally and 40 vertically. Nested real
+groups move as rigid blocks; scribbles and markup inside them keep their offsets
+and translate with their group.
+
+A label group containing exactly one node, transitively, is see-through: its node
+uses the ordinary layout rules and its label follows. Overlapping membership in
+unrelated groups refuses the run and names the object. A selected **[lock]** group,
+a node inside one, or a locked descendant blocks formatting without moving anything.
+
+**FG**, the F-then-G gesture for all groups, is coming later. After formatting groups
+managed by HopperGroup, tap **Refresh** on HopperGroup; its automatic handshake is
+also coming later.
 
 ## Component
 
@@ -73,7 +90,7 @@ normal behavior. Both F taps are consumed; a held key does not count as two taps
   everywhere** Grasshopper runs on .NET 8.
 - After formatting members of groups managed by **HopperGroup**, tap **Refresh**
   on HopperGroup before continuing to drag members. The automatic handshake is
-  outside this MVP.
+  coming in a later stage.
 
 ## Build and test
 
