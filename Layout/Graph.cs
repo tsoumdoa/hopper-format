@@ -41,6 +41,8 @@ namespace HopperFormat.Layout
                 return Fail("Duplicate node identifiers.", out diagnostic);
             var options = snapshot.Options;
             if (!Finite(options.GapX) || !Finite(options.GapY) || !Finite(options.StackGap) ||
+                !Finite(options.GroupGapX) || !Finite(options.GroupGapY) ||
+                options.GroupGapX < 0 || options.GroupGapY < 0 ||
                 options.GapX < 0 || options.GapY < 0 || options.StackGap < 0)
                 return Fail("Gaps must be finite and non-negative.", out diagnostic);
             foreach (var node in nodes)

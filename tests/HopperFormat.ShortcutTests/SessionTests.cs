@@ -31,15 +31,27 @@ internal static class SessionTests
             Assert(f.Session.Status == "Already formatted" && f.Session.LastMoves == 0
                 && f.Document.UndoUtil.Records.Count == 1 && record.Before.Count <= 2, "menu path disagrees with FF/no-op");
         });
-        Check(form, "Session menu reports empty selection and skipped groups without moving members", f =>
+        Check(form, "Session menu formats a selected label group and leaves other nodes untouched", f =>
         {
             var group = new GH_Group { NickName = "Group only" };
             group.ObjectIDs.Add(f.First.InstanceGuid); f.Document.Objects.Add(group);
             f.Document.Selection.Clear(); f.Document.Selection.Add(group);
             f.Session.Run();
-            Assert(f.Session.Status == "Select components to format" && f.Session.LastMoves == 0
-                && f.Session.Log(false).Any(line => line.Contains("GH_Group 'Group only'"))
-                && f.Document.UndoUtil.Creates == 0 && f.First.Attributes == null, "group-only selection expanded or silent");
+            Assert(f.Session.Status == "Already formatted" && f.Session.LastMoves == 0
+                && !f.Session.Log(false).Any(line => line.Contains("Skipped"))
+                && f.Document.UndoUtil.Creates == 0 && f.First.Attributes != null && f.Second.Attributes.Pivot == f.Second.InitialPivot,
+                "label-only group was skipped or moved a loose node");
+        });
+        Check(form, "Session FF captures a selected group and writes one Format groups undo record", f =>
+        {
+            var group = new GH_Group { NickName = "Pipeline" };
+            group.ObjectIDs.AddRange(new[] { f.First.InstanceGuid, f.Second.InstanceGuid });
+            f.Document.Objects.Add(group); f.Document.Selection.Clear(); f.Document.Selection.Add(group);
+            Tap(f.Canvas); Assert(f.Session.Status == "Format selection (1 objects) · tap F again", "group-only FF was not captured");
+            Tap(f.Canvas);
+            Assert(f.Session.LastMoves > 0 && f.Session.Status.StartsWith("Formatted groups")
+                && f.Document.UndoUtil.Records.Single().Name == "Format groups", "group FF did not apply: " + f.Session.Status + " " + string.Join(";", f.Session.Log(true)));
+            f.Session.Run(); Assert(f.Session.Status == "Already formatted" && f.Document.UndoUtil.Records.Count == 1, "group repeat moved");
         });
         Check(form, "Session refuses locked ancestors before solving or applying", f =>
         {

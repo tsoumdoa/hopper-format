@@ -911,6 +911,7 @@ internal static class Program
     private static void Main()
     {
         GoldenTests(); BalanceTests(); OrderingTests(); ValidationTests(); RandomTests();
+        failures += HierarchyTests.Run();
         Environment.ExitCode = failures == 0 ? 0 : 1;
     }
 }

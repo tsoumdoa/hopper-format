@@ -52,7 +52,7 @@ namespace HopperFormat.Layout
                     foreach (var node in graph.Nodes)
                     {
                         tops[node.Id] = new Vec2(roundAnchor.X, y);
-                        y += node.Height + graph.Options.GapY;
+                        y += node.Height + Placement.UnconnectedGap(graph, node);
                     }
                 }
                 else
@@ -70,7 +70,7 @@ namespace HopperFormat.Layout
                         double minX = island.Min(n => placed[n.Id].X);
                         foreach (var node in island)
                             tops[node.Id] = new Vec2(placed[node.Id].X + roundAnchor.X - minX, placed[node.Id].Y + nextY - minY);
-                        nextY = island.Max(n => tops[n.Id].Y + n.Height) + 2 * graph.Options.GapY;
+                        nextY = island.Max(n => tops[n.Id].Y + n.Height) + Placement.IslandGap(graph, island, islands.SkipWhile(i => i != island).Skip(1).FirstOrDefault() ?? new List<Node>());
                     }
                 }
                 if (tops.Count > 0)
