@@ -31,50 +31,9 @@ namespace HopperFormat
         internal static string FormatAllDiagnostic(GH_Document document, GH_Group root)
         {
             var ids = Descendants(document, root); ids.Add(root.InstanceGuid);
-            var diagnostic = OwnershipDiagnostic(document, ids) ?? LockedDiagnostic(document, ids);
-            if (diagnostic != null) return diagnostic;
-            var objects = document.Objects.ToDictionary(o => o.InstanceGuid);
-            var nodes = document.Objects.Where(SelectionSnapshot.IsNode).ToArray();
-            var outputOwners = new Dictionary<IGH_Param, Guid>();
-            foreach (var node in nodes)
-                foreach (var port in node is IGH_Component c ? c.Params.Output.ToArray() : new[] { (IGH_Param)node })
-                    outputOwners[port] = node.InstanceGuid;
-            var edges = new List<(Guid From, Guid To)>();
-            foreach (var node in nodes.Where(n => ids.Contains(n.InstanceGuid)))
-                foreach (var port in node is IGH_Component c ? c.Params.Input.ToArray() : new[] { (IGH_Param)node })
-                    foreach (var source in port.Sources)
-                        if (outputOwners.TryGetValue(source, out var from) && ids.Contains(from)) edges.Add((from, node.InstanceGuid));
-            bool Cycle(Dictionary<Guid, Guid> owner, bool contracted)
-            {
-                var units = owner.Values.Distinct().ToArray();
-                var links = edges.Where(e => owner.ContainsKey(e.From) && owner.ContainsKey(e.To))
-                    .Select(e => (From: owner[e.From], To: owner[e.To])).Where(e => !contracted || e.From != e.To).Distinct().ToArray();
-                var incoming = units.ToDictionary(id => id, id => links.Count(e => e.To == id));
-                var ready = new Queue<Guid>(units.Where(id => incoming[id] == 0)); int count = 0;
-                while (ready.Count > 0)
-                {
-                    var id = ready.Dequeue(); count++;
-                    foreach (var e in links.Where(e => e.From == id)) if (--incoming[e.To] == 0) ready.Enqueue(e.To);
-                }
-                return count != units.Length;
-            }
-            if (Cycle(nodes.Where(n => ids.Contains(n.InstanceGuid)).ToDictionary(n => n.InstanceGuid, n => n.InstanceGuid), false))
-                return "Dataflow graph contains a cycle";
-            foreach (var group in document.Objects.OfType<GH_Group>().Where(g => ids.Contains(g.InstanceGuid)))
-            {
-                var children = group.ObjectIDs.Where(objects.ContainsKey).Select(id => objects[id]).OfType<GH_Group>().ToArray();
-                children = children.Where(c => !children.Any(a => a != c && Ancestors(document, new[] { c.InstanceGuid }).Contains(a))).ToArray();
-                var owner = new Dictionary<Guid, Guid>();
-                foreach (var child in children)
-                {
-                    var members = Descendants(document, child).Where(id => objects.ContainsKey(id) && SelectionSnapshot.IsNode(objects[id])).ToArray();
-                    foreach (var id in members) owner[id] = members.Length == 1 ? id : child.InstanceGuid;
-                }
-                foreach (var id in group.ObjectIDs.Where(id => objects.ContainsKey(id) && SelectionSnapshot.IsNode(objects[id])))
-                    if (!owner.ContainsKey(id)) owner[id] = id;
-                if (Cycle(owner, true)) return "Group '" + SelectionSnapshot.Label(group) + "': contracted graph contains a cycle";
-            }
-            return null;
+            // Other inner failures are movable rigid targets, so preflight only
+            // excludes unsafe ownership and locks. Topology belongs to the solver.
+            return OwnershipDiagnostic(document, ids) ?? LockedDiagnostic(document, ids);
         }
 
         // Reverse reachability handles overlapping groups and cycles without
@@ -113,13 +72,16 @@ namespace HopperFormat
             foreach (var group in relevant)
                 if (ancestors[group.InstanceGuid].Contains(group.InstanceGuid))
                     return $"Group membership cycle at '{SelectionSnapshot.Label(group)}'";
+            var objects = document.Objects.ToDictionary(o => o.InstanceGuid);
+            bool LabelGroup(GH_Group g) => Descendants(document, g).Count(id => objects.TryGetValue(id, out var obj) && SelectionSnapshot.IsNode(obj)) == 1;
             foreach (var obj in document.Objects.Where(o => targets.Contains(o.InstanceGuid))
                 .OrderBy(o => SelectionSnapshot.IsNode(o) ? 0 : o is GH_Group ? 2 : 1).ThenBy(o => o.InstanceGuid))
             {
                 var owners = Ancestors(document, new[] { obj.InstanceGuid });
                 for (int i = 0; i < owners.Count; i++)
                     for (int j = i + 1; j < owners.Count; j++)
-                        if (!ancestors[owners[i].InstanceGuid].Contains(owners[j].InstanceGuid) &&
+                        if (!LabelGroup(owners[i]) && !LabelGroup(owners[j]) &&
+                            !ancestors[owners[i].InstanceGuid].Contains(owners[j].InstanceGuid) &&
                             !ancestors[owners[j].InstanceGuid].Contains(owners[i].InstanceGuid))
                             return $"Overlapping membership for '{SelectionSnapshot.Label(obj)}'";
             }

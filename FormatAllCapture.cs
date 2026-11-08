@@ -27,6 +27,8 @@ namespace HopperFormat
                 AddObstacle(obj);
             foreach (var root in roots)
             {
+                bool fixedRoot = GroupMembership.OwnershipDiagnostic(document, GroupMembership.Descendants(document, root).Concat(new[] { root.InstanceGuid })) != null
+                    || GroupMembership.LockedDiagnostic(document, GroupMembership.Descendants(document, root).Concat(new[] { root.InstanceGuid })) != null;
                 var reason = GroupMembership.FormatAllDiagnostic(document, root);
                 SelectionSnapshot inner = null;
                 if (reason == null)
@@ -35,8 +37,7 @@ namespace HopperFormat
                     {
                         inner = SelectionSnapshot.Capture(document, options, new[] { root });
                         reason = inner.Diagnostic;
-                        // A partially measured group cannot safely be formatted as a smaller group.
-                        if (reason == null && inner.Skipped.Count > 0) reason = string.Join("; ", inner.Skipped);
+                        capture.Log.AddRange(inner.Skipped);
                     }
                     catch (Exception error) { reason = error.Message; }
                 }
@@ -44,11 +45,19 @@ namespace HopperFormat
                 if (reason == null)
                 {
                     bounds = Bounds(root);
-                    foreach (var pair in inner.Objects) capture.Objects.Add(pair.Key, pair.Value);
+                    foreach (var pair in inner.Objects) capture.Objects[pair.Key] = pair.Value;
                 }
-                else bounds = ObstacleGroup(root);
+                else bounds = ObstacleGroup(root, fixedRoot);
+                var memberIds = GroupMembership.Descendants(document, root);
+                var physical = document.Objects.Where(o => memberIds.Contains(o.InstanceGuid) && !(o is GH_Group) && o.Attributes != null).ToArray();
+                if (!fixedRoot) foreach (var obj in physical) capture.Objects[obj.InstanceGuid] = obj;
                 targets.Add(new FormatAllTarget { Id = root.InstanceGuid, Label = SelectionSnapshot.Label(root),
-                    Bounds = bounds, Hierarchy = inner?.Hierarchy, SkipReason = reason });
+                    Bounds = bounds, Hierarchy = inner?.Hierarchy, SkipReason = reason, Fixed = fixedRoot,
+                    RigidNodeIds = physical.Where(SelectionSnapshot.IsNode).Select(o => o.InstanceGuid).ToArray(),
+                    RigidMembers = physical.Select(o => new NonNodeMember { Id = o.InstanceGuid, Label = SelectionSnapshot.Label(o),
+                        Bounds = Bounds(o), PivotOffset = new Vec2(o.Attributes.Pivot.X - o.Attributes.Bounds.X, o.Attributes.Pivot.Y - o.Attributes.Bounds.Y) }).ToArray(),
+                    RigidGroupBoxes = document.Objects.OfType<GH_Group>().Where(g => (g == root || memberIds.Contains(g.InstanceGuid)) && g.Attributes != null)
+                        .ToDictionary(g => g.InstanceGuid, g => Bounds(g)) });
             }
             // Membership cycles can have no top-level root. Keep their visible objects fixed too.
             var reached = new HashSet<Guid>(roots.SelectMany(g => GroupMembership.Descendants(document, g)).Concat(roots.Select(g => g.InstanceGuid)));
@@ -82,14 +91,17 @@ namespace HopperFormat
                     if (obj.Attributes == null) return;
                 }
                 var b = Bounds(obj);
-                if (b.Width > 0 && b.Height > 0) obstacles.Add(b);
+                if (FormatAllSolver.Measurable(b)) obstacles.Add(b);
                 else capture.Log.Add(SelectionSnapshot.SkippedMessage(obj, "empty obstacle bounds after layout"));
             }
-            Box ObstacleGroup(GH_Group group)
+            Box ObstacleGroup(GH_Group group, bool fixedGroup = true)
             {
                 var ids = GroupMembership.Descendants(document, group);
                 var members = document.Objects.Where(o => ids.Contains(o.InstanceGuid) && !(o is GH_Group)).ToArray();
-                foreach (var obj in members) AddObstacle(obj);
+                foreach (var obj in members)
+                    if (fixedGroup) AddObstacle(obj);
+                    else try { Measure(obj); }
+                        catch (Exception error) { capture.Log.Add(SelectionSnapshot.SkippedMessage(obj, "rigid layout failed: " + error.Message)); }
                 // Never invoke recursive host group layout on a membership cycle.
                 bool cycle = document.Objects.OfType<GH_Group>().Where(g => ids.Contains(g.InstanceGuid) || g == group)
                     .Any(g => GroupMembership.Ancestors(document, new[] { g.InstanceGuid }).Contains(g));
@@ -108,7 +120,7 @@ namespace HopperFormat
                 if (group.Attributes != null)
                 {
                     var b = Bounds(group);
-                    if (b.Width > 0 && b.Height > 0) return b;
+                    if (FormatAllSolver.Measurable(b)) return b;
                 }
                 // Physical members above remain obstacles even for an unmeasurable cyclic outline.
                 return new Box(0, 0, 0, 0);

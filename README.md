@@ -48,8 +48,11 @@ groups move as rigid blocks; scribbles and markup inside them keep their offsets
 and translate with their group.
 
 A label group containing exactly one node, transitively, is see-through: its node
-uses the ordinary layout rules and its label follows. Overlapping membership in
-unrelated groups refuses the run and names the object. A selected **[lock]** group,
+uses the ordinary layout rules and its label follows. Overlapping membership between
+unrelated multi-node groups refuses the run and names the object; overlap with a
+label group is allowed. Nested children whose wires leave and re-enter them are
+laid out with their parent and logged. Empty nested groups are ignored, and nodes
+with empty bounds are excluded and reported. A selected **[lock]** group,
 a node inside one, or a locked descendant blocks formatting without moving anything.
 
 ## Format all
@@ -58,12 +61,17 @@ Clear the selection and tap **FF** to format every top-level group, including la
 groups. The first tap previews the eligible group count. Each group formats its
 contents independently, then the visible boxes tidy in place: nearby tops and left
 edges snap together, small gaps even to 50 units horizontally or 40 vertically,
-and larger gaps stay. Collisions push groups right or their rows down; clearance
-also accounts for obstacles just below a group. Ungrouped objects never move.
+and larger gaps stay. Only neighbours in the same snapped row can push right.
+All other collisions push the whole row down with clearance, including growth
+into objects below it. Column snapping keeps vertical stacks left-aligned.
+Ungrouped objects never move.
 
-Locked groups and groups with overlapping membership, contracted cycles or failed
-inner formatting stay fixed as obstacles and are reported in Log. Ungrouped nodes,
-notes, markup and HopperFormat itself are obstacles too. The component's
+Groups whose inner formatting fails are reported in Log and still move as rigid
+boxes, with their contents untouched. Only locked groups, groups with real
+multi-node ownership conflicts, and ungrouped objects (including nodes, notes,
+markup and HopperFormat itself) are fixed obstacles. Nested contraction cycles
+dissolve instead of skipping their roots. Log includes skipped and dissolved counts.
+The component's
 **Format all groups** menu item runs the same action whatever is selected. With no
 eligible group, F passes through and the pill says `No groups to format`, preserving
 the last run's outputs. One Undo restores the entire format-all run.

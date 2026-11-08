@@ -57,12 +57,12 @@ internal static class FormatAllTests
         Check("Format all grown group clears fixed component and locked group", () => {
             var obstacles = new[] { new Box(100,0,80,80), new Box(230,0,80,80) };
             var r = Tidy(new[] { new Box(0,0,160,80) }, obstacles);
-            At(r,1,360,0); Assert(obstacles[0].X == 100 && obstacles[1].X == 230, "obstacle moved");
+            At(r,1,0,120); Assert(obstacles[0].X == 100 && obstacles[1].X == 230, "obstacle moved");
         });
-        Check("Format all bottom clearance: group=(230,0), component=(100,90), 10-unit gap pushes right", () => {
+        Check("Format all bottom clearance: group=(0,170), component=(100,90), row pushes down", () => {
             var obstacle = new Box(100,90,80,40);
             var r = Tidy(new[] { new Box(0,0,160,80) }, obstacle);
-            At(r,1,230,0); Assert(obstacle.X == 100 && obstacle.Y == 90, "component moved");
+            At(r,1,0,170); Assert(obstacle.X == 100 && obstacle.Y == 90, "component moved");
         });
         Check("Format all subunit row/column spans stay aligned, including seed-5 lefts", () => {
             var boxes = new[] { new Box(4.3886,0,80,80),new Box(4.8125,300,80,80),new Box(4.9797,600,80,80),
@@ -77,11 +77,11 @@ internal static class FormatAllTests
             At(r,1,60.8,0); At(r,2,60.4,300); At(r,3,400,660.8); At(r,4,700,660.4);
             Assert(!r.Unstable && Coordinates(r) == Coordinates(GroupTidy.Solve(r.GroupBoxes,Array.Empty<Box>(),new Options())),"representative not fixed");
         });
-        Check("Format all fractional collision push: group=(232.3,0.4), obstacle clearance=50.9", () => {
+        Check("Format all fractional collision push: group=(0.3,171.4), downward clearance=40.7", () => {
             var obstacle = new Box(110.8,90.5,70.6,40.2);
             var r = Tidy(new[] { new Box(.3,.4,100.2,80.3) },obstacle);
-            At(r,1,232.3,.4); Clearance(r,new[] { obstacle },"fractional push");
-            Assert(Whole(r.GroupBoxes[Id(1)].X - .3) && !r.Unstable,"fractional push translation");
+            At(r,1,.3,171.4); Clearance(r,new[] { obstacle },"fractional push");
+            Assert(Whole(r.GroupBoxes[Id(1)].Y - .4) && !r.Unstable,"fractional push translation");
             Assert(Coordinates(r) == Coordinates(GroupTidy.Solve(r.GroupBoxes,new[] { obstacle },new Options())),"fractional push not fixed");
         });
         Check("Format all fractional boxes/padding: A=(10.3,0.4), B=(160.7,0.9), C=(10.7,120.8), whole descendant deltas and fixed point", () => {
@@ -124,12 +124,127 @@ internal static class FormatAllTests
             var good = Target(3, new Node { Id = Id(101), CurrentTop = new Vec2(0,0), Width = 100, Height = 80 });
             var bad = Target(4, new Node { Id = Id(102), CurrentTop = new Vec2(400,0), Width = 100, Height = 80 });
             bad.Hierarchy.Groups[0].Locked = true;
-            var r = FormatAllSolver.Solve(new FormatAllSnapshot { Targets = new[] { Target(1,shared),Target(2,shared),good,bad } });
+            var first = Target(1,shared); var second = Target(2,shared);
+            first.Hierarchy.Groups[0].Nodes = new[] { shared, new Node { Id = Id(103), Width = 20, Height = 20 } };
+            second.Hierarchy.Groups[0].Nodes = new[] { shared, new Node { Id = Id(104), Width = 20, Height = 20 } };
+            var r = FormatAllSolver.Solve(new FormatAllSnapshot { Targets = new[] { first,second,good,bad } });
             Assert(r.Layout.Success && r.Skipped == 3 && r.Formatted == 1 && r.Layout.Log.Count(l => l.StartsWith("Skipped")) == 3, "skip accounting");
             Assert(r.Layout.Tops.Count == 1 && !r.Layout.Tops.ContainsKey(shared.Id) && r.Layout.Moves.Single().Id == Id(101), "skipped group moved");
-            At(r.Layout,3,150,0);
+            At(r.Layout,3,0,120);
             var none = FormatAllSolver.Solve(new FormatAllSnapshot { Targets = new[] { bad } });
             Assert(!none.Layout.Success && none.Skipped == 1 && none.Layout.Moves.Count == 0, "all-failed run accepted");
+        });
+        Check("Owner stack: Cut, Plate and Bolt keep their left edge; growth pushes Bolt down", () => {
+            FormatAllTarget Stack(int id, string name, double y, bool connected) {
+                var a = TestNode(100 + id * 10,10,y + 20); var b = TestNode(101 + id * 10,20,y + 30);
+                var label = new HierarchyGroup { Id = Id(300 + id), Nodes = new[] { a } };
+                var child = new HierarchyGroup { Id = Id(200 + id), Nodes = new[] { b }, Children = new[] { label } };
+                var root = new HierarchyGroup { Id = Id(id), Label = name, Children = new[] { child }, Padding = new Padding(10,20,10,20) };
+                return new FormatAllTarget { Id = root.Id, Label = name, Bounds = new Box(0,y,110,90),
+                    Hierarchy = new HierarchySnapshot { Groups = new[] { root }, Edges = connected ? new[] { new Edge { From = a.Id,To = b.Id } } : Array.Empty<Edge>() } };
+            }
+            var targets = new[] { Stack(1,"Cut",0,true),Stack(2,"Plate",130,false),Stack(3,"Bolt",260,true),
+                new FormatAllTarget { Id = Id(4), Label = "Right of Cut", Bounds = new Box(160,0,100,80), Hierarchy = new HierarchySnapshot {
+                    Groups = new[] { new HierarchyGroup { Id = Id(4), Nodes = new[] { TestNode(150,170,20) }, Padding = new Padding(10,20,10,20) } } } } };
+            var s = new FormatAllSnapshot { Targets = targets };
+            var outcome = FormatAllSolver.Solve(s); var r = outcome.Layout;
+            Assert(r.Success && !r.Unstable && outcome.Formatted == 4 && outcome.Skipped == 0,"stack skipped a root");
+            At(r,1,0,0); At(r,2,0,120); At(r,3,0,296); At(r,4,260,0);
+            Assert(r.GroupBoxes[Id(2)].Height > targets[1].Bounds.Height && r.GroupBoxes[Id(3)].Y > targets[2].Bounds.Y,"Plate did not grow into Bolt");
+            var roots = new Result { GroupBoxes = targets.ToDictionary(t => t.Id,t => r.GroupBoxes[t.Id]) };
+            Clearance(roots,Array.Empty<Box>(),"owner stack"); WholeMoves(s,r,"owner stack");
+            StableAll(s,r,"owner stack");
+            Console.WriteLine("PASS Owner-stack coordinates: Cut=(0,0,210,80); Plate=(0,120,100,136); Bolt=(0,296,210,80); Right=(260,0,100,80)");
+        });
+        Check("No far jump: inner growth into an ungrouped component pushes the row down", () => {
+            var root = new HierarchyGroup { Id = Id(1), Nodes = new[] { TestNode(100,10,20),TestNode(101,20,30) }, Padding = new Padding(10,20,10,20) };
+            var obstacle = new Box(20,110,80,50);
+            var s = new FormatAllSnapshot { Targets = new[] { new FormatAllTarget { Id = root.Id, Bounds = new Box(0,0,110,90),
+                Hierarchy = new HierarchySnapshot { Groups = new[] { root } } } }, Obstacles = new[] { obstacle } };
+            var r = FormatAllSolver.Solve(s).Layout;
+            At(r,1,0,200); Assert(r.GroupBoxes[Id(1)].Height == 136,"fixture did not grow");
+            Clearance(r,s.Obstacles,"no far jump"); StableAll(s,r,"no far jump");
+        });
+        Check("Format all label overlap follows its node without a second owner or pivot", () => {
+            var a = TestNode(100,10,20); var b = TestNode(101,20,30);
+            var root = new HierarchyGroup { Id = Id(1), Nodes = new[] { a,b }, Padding = new Padding(10,20,10,20) };
+            var label = new HierarchyGroup { Id = Id(2), Nodes = new[] { b }, Padding = new Padding(3,4,5,6) };
+            var s = new FormatAllSnapshot { Targets = new[] { new FormatAllTarget { Id = root.Id, Hierarchy = new HierarchySnapshot {
+                Groups = new[] { root }, Edges = new[] { new Edge { From = a.Id,To = b.Id } } } },
+                new FormatAllTarget { Id = label.Id, Hierarchy = new HierarchySnapshot { Groups = new[] { label } } } } };
+            var r = FormatAllSolver.Solve(s);
+            Assert(r.Layout.Success && r.Formatted == 2 && r.Skipped == 0 && r.Layout.Tops.Count == 2,"label overlap refused or duplicated a node");
+            Assert(r.Layout.GroupBoxes[label.Id].X == r.Layout.Tops[b.Id].X - 3,"label did not follow node");
+            StableAll(s,r.Layout,"label overlap");
+        });
+        Check("Skipped inner solve moves rigidly with untouched relative contents and whole deltas", () => {
+            var a = TestNode(100,10,20); var b = TestNode(101,20,30);
+            var root = new HierarchyGroup { Id = Id(1), Nodes = new[] { a,b }, Padding = new Padding(10,20,10,20) };
+            var s = new FormatAllSnapshot { Targets = new[] { new FormatAllTarget { Id = root.Id, Label = "Rigid", Bounds = new Box(0,0,110,90),
+                Hierarchy = new HierarchySnapshot { Groups = new[] { root }, Edges = new[] { new Edge { From = a.Id,To = b.Id,ToPort = 99 } } } } }, Obstacles = new[] { new Box(0,100,80,40) } };
+            var r = FormatAllSolver.Solve(s);
+            Assert(r.Layout.Success && r.Formatted == 0 && r.Skipped == 1 && r.Layout.Log.Any(l => l.Contains("moves rigidly")),"skipped root was fixed or refused");
+            At(r.Layout,1,0,180);
+            Assert(r.Layout.Tops[b.Id].X - r.Layout.Tops[a.Id].X == 10 && r.Layout.Tops[b.Id].Y - r.Layout.Tops[a.Id].Y == 10,"rigid contents rearranged");
+            WholeMoves(s,r.Layout,"rigid"); Clearance(r.Layout,s.Obstacles,"rigid");
+            StableAll(s,r.Layout,"rigid root");
+        });
+        Check("Malformed root geometry refuses its inner solve without stopping healthy roots", () => {
+            var bad = TestNode(100,0,0); bad.Width = double.NaN;
+            var good = TestNode(101,0,0);
+            var s = new FormatAllSnapshot { Targets = new[] {
+                new FormatAllTarget { Id = Id(1), Bounds = new Box(0,0,double.NaN,80), Hierarchy = new HierarchySnapshot {
+                    Groups = new[] { new HierarchyGroup { Id = Id(1),Nodes = new[] { bad } } } } },
+                new FormatAllTarget { Id = Id(2), Hierarchy = new HierarchySnapshot {
+                    Groups = new[] { new HierarchyGroup { Id = Id(2),Nodes = new[] { good } } } } } } };
+            var r = FormatAllSolver.Solve(s);
+            Assert(r.Layout.Success && !r.Layout.Unstable && r.Skipped == 1 && r.Formatted == 1 && !r.Layout.Tops.ContainsKey(bad.Id),"malformed root stopped healthy root");
+        });
+        Check("Random format-all recovery: 300 seeds, nested cycles, empty groups, label overlaps and fixed obstacles", () => {
+            for (int seed = 0; seed < 300; seed++) {
+                var random = new Random(seed);
+                var targets = Enumerable.Range(1,3).Select(i => {
+                    var a = TestNode(100 + i*10,random.Next(500),random.Next(500));
+                    var b = TestNode(101 + i*10,random.Next(500),random.Next(500));
+                    var c = TestNode(102 + i*10,random.Next(500),random.Next(500));
+                    var root = new HierarchyGroup { Id = Id(i), Label = "Root" + i, Nodes = new[] { b },
+                        Children = new[] { new HierarchyGroup { Id = Id(200+i), Label = "Child" + i, Nodes = new[] { a,c } },
+                            new HierarchyGroup { Id = Id(300+i), Nodes = new[] { a } }, new HierarchyGroup { Id = Id(400+i) } } };
+                    return new FormatAllTarget { Id = root.Id, Hierarchy = new HierarchySnapshot { Groups = new[] { root },
+                        Edges = new[] { new Edge { From = a.Id,To = b.Id },new Edge { From = b.Id,To = c.Id } } } };
+                }).ToArray();
+                var obstacles = new[] { new Box(random.Next(500),random.Next(500),100,80) };
+                var s = new FormatAllSnapshot { Targets = targets, Obstacles = obstacles };
+                var r = FormatAllSolver.Solve(s);
+                Assert(r.Layout.Success && !r.Layout.Unstable && r.Skipped == 0 && r.Layout.Log.Count(l => l.Contains("its wires leave and re-enter it")) == 3,"seed " + seed + " recovery failed");
+                WholeMoves(s,r.Layout,"recovery " + seed);
+                Clearance(new Result { GroupBoxes = targets.ToDictionary(t => t.Id,t => r.Layout.GroupBoxes[t.Id]) },obstacles,"recovery " + seed);
+                var again = FormatAllSolver.Solve(Reapply(s,r.Layout));
+                Assert(again.Layout.Success && !again.Layout.Unstable && again.Layout.Moves.Count == 0,"seed " + seed + " recovery not fixed");
+                var shuffle = FormatAllSolver.Solve(new FormatAllSnapshot { Targets = targets.Reverse().ToArray(), Obstacles = obstacles });
+                Assert(Coordinates(r.Layout) == Coordinates(shuffle.Layout) && r.Layout.Log.SequenceEqual(shuffle.Layout.Log),"seed " + seed + " recovery shuffle");
+            }
+        });
+        Check("Random vertical stacks: 300 seeds, only same-row neighbours move right and whole rows clear obstacles downward", () => {
+            for (int seed = 0; seed < 300; seed++) {
+                var random = new Random(seed); int count = random.Next(3,10);
+                var boxes = Enumerable.Range(1,count).ToDictionary(Id,i => new Box(i == 1 ? .3 : random.Next(20) + .3,(i-1)*120 + .4,
+                    random.Next(80,220) + .2,random.Next(80,240) + .3));
+                boxes.Add(Id(100),new Box(180.3,.9,90.2,80.3));
+                var obstacles = new[] { new Box(0,random.Next(50,500),random.Next(80,250),random.Next(30,100)) };
+                var saved = obstacles.Select(b => (b.X,b.Y,b.Width,b.Height)).ToArray();
+                var r = GroupTidy.Solve(boxes,obstacles,new Options());
+                Assert(r.Success && !r.Unstable,"stack seed " + seed + " unstable");
+                foreach (var id in boxes.Keys.Where(id => id != Id(100)))
+                    Assert(Math.Abs(r.GroupBoxes[id].X - .3) < 1e-7,"stack seed " + seed + " row jumped right");
+                Assert(Math.Abs(r.GroupBoxes[Id(1)].Y - r.GroupBoxes[Id(100)].Y) < 1,"whole row separated");
+                foreach (var pair in r.GroupBoxes) Assert(Whole(pair.Value.X-boxes[pair.Key].X) && Whole(pair.Value.Y-boxes[pair.Key].Y),"stack fractional delta");
+                Assert(saved.SequenceEqual(obstacles.Select(b => (b.X,b.Y,b.Width,b.Height))),"stack moved fixed obstacle");
+                Clearance(r,obstacles,"stack " + seed);
+                var again = GroupTidy.Solve(r.GroupBoxes,obstacles,new Options());
+                var shuffle = GroupTidy.Solve(boxes.Reverse().ToDictionary(p => p.Key,p => p.Value),obstacles,new Options());
+                Assert(!again.Unstable && Coordinates(r) == Coordinates(again) && Coordinates(r) == Coordinates(shuffle),"stack not fixed or deterministic");
+            }
         });
         Check("Random format-all tidy properties: 1000 fractional seeds, whole translations, clearance, shuffle and repeat", () => {
             for (int seed = 0; seed < 1000; seed++) {
@@ -190,6 +305,17 @@ internal static class FormatAllTests
         });
         return failures;
     }
+
+    private static void StableAll(FormatAllSnapshot s, Result r, string context)
+    {
+        var again = FormatAllSolver.Solve(Reapply(s,r)).Layout;
+        Assert(again.Success && !again.Unstable && again.Moves.Count == 0,context + " not fixed: " + again.Diagnostic + " " + Coordinates(again));
+    }
+    private static Node TestNode(int id, double x, double y) => new Node { Id = Id(id), CurrentTop = new Vec2(x,y), Width = 80,Height = 40,
+        Inputs = new[] { new Vec2(0,10) }, Outputs = new[] { new Vec2(80,10) } };
+    private static FormatAllSnapshot Reapply(FormatAllSnapshot s, Result r) => new FormatAllSnapshot { Options = s.Options, Obstacles = s.Obstacles,
+        Targets = s.Targets.Select(t => new FormatAllTarget { Id = t.Id, Label = t.Label, Bounds = r.GroupBoxes[t.Id], Fixed = t.Fixed,
+            SkipReason = t.SkipReason, Hierarchy = Applied(t.Hierarchy,r) }).ToArray() };
 
     private static HierarchySnapshot Applied(HierarchySnapshot s, Result r)
     {
