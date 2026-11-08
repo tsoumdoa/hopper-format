@@ -22,6 +22,7 @@ namespace HopperFormat.Layout
     public sealed class HierarchyGroup
     {
         public Guid Id { get; set; }
+        // Complete message description supplied by the host, including any quotes.
         public string Label { get; set; } = string.Empty;
         public IReadOnlyList<Node> Nodes { get; set; } = Array.Empty<Node>();
         public IReadOnlyList<HierarchyGroup> Children { get; set; } = Array.Empty<HierarchyGroup>();
@@ -134,14 +135,14 @@ namespace HopperFormat.Layout
                 if (group == null) throw new InvalidOperationException("Null hierarchy group.");
                 if (group.Nodes == null || group.NonNodes == null || group.Children == null ||
                     group.Children.Any(c => c == null) || group.NonNodes.Any(n => n == null))
-                    throw new InvalidOperationException("Invalid members for '" + group.Label + "'.");
-                if (path.Contains(group.Id)) throw new InvalidOperationException("Group membership cycle at '" + group.Label + "'.");
+                    throw new InvalidOperationException(group.Label + ": invalid members.");
+                if (path.Contains(group.Id)) throw new InvalidOperationException(group.Label + ": group membership cycle.");
                 if (groups.ContainsKey(group.Id) || nodes.ContainsKey(group.Id) || nonNodes.ContainsKey(group.Id))
-                    throw new InvalidOperationException("Duplicate group identifier: '" + group.Label + "'.");
-                if (group.Locked) throw new InvalidOperationException("Selection belongs to locked group '" + group.Label + "'.");
+                    throw new InvalidOperationException(group.Label + ": duplicate group identifier.");
+                if (group.Locked) throw new InvalidOperationException(group.Label + ": Selection belongs to locked group.");
                 var p = group.Padding;
                 if (new[] { p.Left, p.Top, p.Right, p.Bottom }.Any(v => !Graph.Finite(v) || v < 0))
-                    throw new InvalidOperationException("Invalid padding for '" + group.Label + "'.");
+                    throw new InvalidOperationException(group.Label + ": invalid padding.");
                 groups.Add(group.Id, group);
                 depths.Add(group.Id, path.Length);
                 var next = path.Concat(new[] { group.Id }).ToArray();
@@ -236,7 +237,7 @@ namespace HopperFormat.Layout
                     if (candidates.Count == 0) return;
                     var next = candidates.OrderBy(c => depths[c.Child.Id]).ThenBy(c => c.Child.Id).ThenBy(c => c.Parent.Id).First();
                     dissolved.Add(next.Child.Id);
-                    log.Add("Group '" + next.Child.Label + "' was laid out with '" + next.Parent.Label + "': its wires leave and re-enter it");
+                    log.Add(next.Child.Label + " was laid out with " + next.Parent.Label + ": its wires leave and re-enter it");
                 }
             }
 
@@ -325,7 +326,7 @@ namespace HopperFormat.Layout
                         var note = ObjectBox(id);
                         if (formattedNodes.Any(n => n.Right > note.X + 1e-7 && note.Right > n.X + 1e-7 &&
                             n.Bottom > note.Y + 1e-7 && note.Bottom > n.Y + 1e-7))
-                            log.Add("Note '" + nonNodes[id].Label + "' overlaps formatted nodes in '" + g.Label + "'");
+                            log.Add("Note '" + nonNodes[id].Label + "' overlaps formatted nodes in " + g.Label);
                     }
                 }
             }

@@ -48,10 +48,13 @@ namespace HopperFormat
                     foreach (var pair in inner.Objects) capture.Objects[pair.Key] = pair.Value;
                 }
                 else bounds = ObstacleGroup(root, fixedRoot);
+                // Refresh read-only diagnostics after obstacle measurement so their
+                // description matches the target's now-available bounds and member order.
+                if (fixedRoot) reason = GroupMembership.FormatAllDiagnostic(document, root);
                 var memberIds = GroupMembership.Descendants(document, root);
                 var physical = document.Objects.Where(o => memberIds.Contains(o.InstanceGuid) && !(o is GH_Group) && o.Attributes != null).ToArray();
                 if (!fixedRoot) foreach (var obj in physical) capture.Objects[obj.InstanceGuid] = obj;
-                targets.Add(new FormatAllTarget { Id = root.InstanceGuid, Label = SelectionSnapshot.Label(root),
+                targets.Add(new FormatAllTarget { Id = root.InstanceGuid, Label = SelectionSnapshot.DescribeGroup(document, root),
                     Bounds = bounds, Hierarchy = inner?.Hierarchy, SkipReason = reason, Fixed = fixedRoot,
                     RigidNodeIds = physical.Where(SelectionSnapshot.IsNode).Select(o => o.InstanceGuid).ToArray(),
                     RigidMembers = physical.Select(o => new NonNodeMember { Id = o.InstanceGuid, Label = SelectionSnapshot.Label(o),
@@ -64,7 +67,7 @@ namespace HopperFormat
             foreach (var group in document.Objects.OfType<GH_Group>().Where(g => !reached.Contains(g.InstanceGuid)))
             {
                 var bounds = ObstacleGroup(group);
-                targets.Add(new FormatAllTarget { Id = group.InstanceGuid, Label = SelectionSnapshot.Label(group), Bounds = bounds,
+                targets.Add(new FormatAllTarget { Id = group.InstanceGuid, Label = SelectionSnapshot.DescribeGroup(document, group), Bounds = bounds,
                     SkipReason = GroupMembership.FormatAllDiagnostic(document, group) ?? "No top-level ownership root" });
             }
             capture.Snapshot = new FormatAllSnapshot { Targets = targets, Obstacles = obstacles, Options = options };
@@ -78,7 +81,8 @@ namespace HopperFormat
             void Measure(IGH_DocumentObject obj)
             {
                 if (obj.Attributes == null) obj.CreateAttributes();
-                if (obj.Attributes == null) throw new InvalidOperationException("No attributes for '" + SelectionSnapshot.Label(obj) + "'");
+                if (obj.Attributes == null) throw new InvalidOperationException(obj is GH_Group
+                    ? "no attributes" : "No attributes for '" + SelectionSnapshot.Label(obj) + "'");
                 obj.Attributes.ExpireLayout(); obj.Attributes.PerformLayout();
             }
             void AddObstacle(IGH_DocumentObject obj)
@@ -86,13 +90,13 @@ namespace HopperFormat
                 try { Measure(obj); }
                 catch (Exception error)
                 {
-                    capture.Log.Add(SelectionSnapshot.SkippedMessage(obj, "obstacle layout failed: " + error.Message));
+                    capture.Log.Add(SelectionSnapshot.SkippedMessage(document, obj, "obstacle layout failed: " + error.Message));
                     // A custom attribute can fail after previously supplying valid bounds.
                     if (obj.Attributes == null) return;
                 }
                 var b = Bounds(obj);
                 if (FormatAllSolver.Measurable(b)) obstacles.Add(b);
-                else capture.Log.Add(SelectionSnapshot.SkippedMessage(obj, "empty obstacle bounds after layout"));
+                else capture.Log.Add(SelectionSnapshot.SkippedMessage(document, obj, "empty obstacle bounds after layout"));
             }
             Box ObstacleGroup(GH_Group group, bool fixedGroup = true)
             {
@@ -101,7 +105,7 @@ namespace HopperFormat
                 foreach (var obj in members)
                     if (fixedGroup) AddObstacle(obj);
                     else try { Measure(obj); }
-                        catch (Exception error) { capture.Log.Add(SelectionSnapshot.SkippedMessage(obj, "rigid layout failed: " + error.Message)); }
+                        catch (Exception error) { capture.Log.Add(SelectionSnapshot.SkippedMessage(document, obj, "rigid layout failed: " + error.Message)); }
                 // Never invoke recursive host group layout on a membership cycle.
                 bool cycle = document.Objects.OfType<GH_Group>().Where(g => ids.Contains(g.InstanceGuid) || g == group)
                     .Any(g => GroupMembership.Ancestors(document, new[] { g.InstanceGuid }).Contains(g));
@@ -113,7 +117,7 @@ namespace HopperFormat
                         if (!seen.Add(g.InstanceGuid)) return;
                         foreach (var child in document.Objects.OfType<GH_Group>().Where(c => g.ObjectIDs.Contains(c.InstanceGuid))) Layout(child);
                         try { Measure(g); }
-                        catch (Exception error) { capture.Log.Add(SelectionSnapshot.SkippedMessage(g, "obstacle layout failed: " + error.Message)); }
+                        catch (Exception error) { capture.Log.Add(SelectionSnapshot.SkippedMessage(document, g, "obstacle layout failed: " + error.Message)); }
                     }
                     Layout(group);
                 }

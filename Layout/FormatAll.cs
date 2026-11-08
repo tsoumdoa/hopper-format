@@ -7,6 +7,7 @@ namespace HopperFormat.Layout
     public sealed class FormatAllTarget
     {
         public Guid Id { get; set; }
+        // Complete message description supplied by the host, including any quotes.
         public string Label { get; set; } = string.Empty;
         public Box Bounds { get; set; }
         public HierarchySnapshot Hierarchy { get; set; }
@@ -68,14 +69,14 @@ namespace HopperFormat.Layout
                     sharedLock ? "Selection belongs to locked or fixed group" : null);
                 var result = reason == null && target.Hierarchy != null ? HierarchySolver.Solve(target.Hierarchy) : null;
                 reason = reason ?? (result == null ? "Missing hierarchy snapshot" : result.Success ? null : result.Diagnostic);
-                if (reason == null && !result.GroupBoxes.ContainsKey(target.Id)) reason = "Group has no measurable members";
+                if (reason == null && !result.GroupBoxes.ContainsKey(target.Id)) reason = "no measurable members";
                 bool fixedTarget = target.Fixed || sharedLock || ownership.Contains(target.Id) || targetGroups[target.Id].Any(g => g.Locked)
                     || reason != null && (reason.StartsWith("Overlapping membership", StringComparison.Ordinal)
                         || reason.StartsWith("Selection belongs to locked", StringComparison.Ordinal));
                 if (reason != null)
                 {
                     skipped++;
-                    log.Add("Skipped group '" + target.Label + "': " + reason + (fixedTarget ? " (fixed)" :
+                    log.Add(Skipped(target, reason) + (fixedTarget ? " (fixed)" :
                         Measurable(target.Bounds) ? " (moves rigidly)" : " (no measurable outline)"));
                     if (fixedTarget)
                     {
@@ -92,7 +93,7 @@ namespace HopperFormat.Layout
             if (solved.Count == 0)
             {
                 foreach (var alias in snapshot.Targets.Where(t => aliases.ContainsKey(t.Id)).OrderBy(t => t.Id))
-                { skipped++; log.Add("Skipped group '" + alias.Label + "': its node belongs to a fixed group (fixed)"); }
+                { skipped++; log.Add(Skipped(alias, "its node belongs to a fixed group") + " (fixed)"); }
                 log.Add("Format all: 0 formatted, " + skipped + " skipped, 0 dissolved");
                 return new FormatAllResult { Skipped = skipped, Layout = new Result {
                     Diagnostic = "No groups to format", Log = log.ToArray() } };
@@ -125,9 +126,9 @@ namespace HopperFormat.Layout
             {
                 var node = PhysicalMembers(alias).First(n => n.Id == nodeIds[alias.Id][0]);
                 if (!tops.TryGetValue(node.Id, out var top))
-                { skipped++; log.Add("Skipped group '" + alias.Label + "': its node belongs to a fixed group (fixed)"); continue; }
+                { skipped++; log.Add(Skipped(alias, "its node belongs to a fixed group") + " (fixed)"); continue; }
                 if (alias.SkipReason == null) formatted++;
-                else { skipped++; log.Add("Skipped group '" + alias.Label + "': " + alias.SkipReason + " (moves rigidly with its node)"); }
+                else { skipped++; log.Add(Skipped(alias, alias.SkipReason) + " (moves rigidly with its node)"); }
                 double dx = top.X - node.Bounds.X, dy = top.Y - node.Bounds.Y;
                 foreach (var pair in OriginalBoxes(alias)) groupBoxes[pair.Key] = Translate(pair.Value, dx, dy);
                 foreach (var member in PhysicalMembers(alias).Where(n => !tops.ContainsKey(n.Id)))
@@ -143,6 +144,14 @@ namespace HopperFormat.Layout
             return new FormatAllResult { Formatted = formatted, Skipped = skipped, Layout = new Result {
                 Success = true, Tops = tops, GroupBoxes = groupBoxes, Moves = moves.Values.ToArray(),
                 Rounds = tidy.Rounds, Unstable = tidy.Unstable || solved.Any(s => s.Result.Unstable), Log = log.ToArray() } };
+        }
+
+        private static string Skipped(FormatAllTarget target, string reason)
+        {
+            // Inner diagnostics already carry their group context. Keep it once when
+            // the failed group is also the format-all target; retain distinct child context.
+            if (reason.StartsWith(target.Label + ": ", StringComparison.Ordinal)) reason = reason.Substring(target.Label.Length + 2);
+            return "Skipped " + target.Label + ": " + reason;
         }
 
         private static IEnumerable<NonNodeMember> PhysicalMembers(FormatAllTarget target)

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.Linq;
 using Grasshopper.Kernel;
 using Grasshopper.Kernel.Special;
@@ -24,13 +25,37 @@ namespace HopperFormat
         internal static string Label(IGH_DocumentObject obj) =>
             string.IsNullOrWhiteSpace(obj.NickName) ? obj.Name : obj.NickName;
 
-        internal static string SkippedMessage(IGH_DocumentObject obj, string reason) =>
-            $"Skipped {obj.GetType().Name} '{Label(obj)}': {reason}";
+        // Read existing geometry only: ownership preflight must never invoke group layout.
+        internal static string DescribeGroup(GH_Document document, GH_Group group)
+        {
+            if (!string.IsNullOrWhiteSpace(group.NickName) && group.NickName != "Group")
+                return $"'{group.NickName}'";
+            var ids = GroupMembership.Descendants(document, group);
+            var nodes = document.Objects.Where(o => ids.Contains(o.InstanceGuid) && IsNode(o))
+                .OrderBy(o => o.Attributes?.Bounds.Top ?? float.PositiveInfinity)
+                .ThenBy(o => o.Attributes?.Bounds.Left ?? float.PositiveInfinity).ThenBy(o => o.InstanceGuid).ToArray();
+            var description = nodes.Length == 0 ? "empty group" : "group [" +
+                string.Join(", ", nodes.Take(3).Select(Label)) + (nodes.Length > 3 ? ", …" : "") + "]";
+            var bounds = group.Attributes?.Bounds;
+            return bounds.HasValue && FormatAllSolver.Measurable(new Box(bounds.Value.X, bounds.Value.Y, bounds.Value.Width, bounds.Value.Height))
+                ? description + string.Format(CultureInfo.InvariantCulture, " at ({0:0}, {1:0})",
+                    LayoutSolver.Round(bounds.Value.X), LayoutSolver.Round(bounds.Value.Y))
+                : description;
+        }
 
-        private static void LayoutObject(IGH_DocumentObject obj)
+        internal static string SkippedMessage(GH_Document document, IGH_DocumentObject obj, string reason)
+        {
+            if (!(obj is GH_Group group)) return $"Skipped {obj.GetType().Name} '{Label(obj)}': {reason}";
+            var label = DescribeGroup(document, group);
+            if (reason.StartsWith(label + ": ", StringComparison.Ordinal)) reason = reason.Substring(label.Length + 2);
+            return $"Skipped {label}: {reason}";
+        }
+
+        private static void LayoutObject(GH_Document document, IGH_DocumentObject obj)
         {
             if (obj.Attributes == null) obj.CreateAttributes();
-            if (obj.Attributes == null) throw new InvalidOperationException($"No attributes for {Label(obj)}");
+            if (obj.Attributes == null) throw new InvalidOperationException(obj is GH_Group group
+                ? $"{DescribeGroup(document, group)}: no attributes" : $"No attributes for {Label(obj)}");
             obj.Attributes.ExpireLayout();
             obj.Attributes.PerformLayout();
         }
@@ -71,14 +96,14 @@ namespace HopperFormat
                 bool node = IsNode(obj);
                 if (!node && !descendants.Contains(obj.InstanceGuid))
                 {
-                    capture.Skipped.Add(SkippedMessage(obj, "not a formattable node"));
+                    capture.Skipped.Add(SkippedMessage(document, obj, "not a formattable node"));
                     continue;
                 }
-                LayoutObject(obj);
+                LayoutObject(document, obj);
                 var bounds = obj.Attributes.Bounds;
                 if (bounds.Width <= 0 || bounds.Height <= 0)
                 {
-                    capture.Skipped.Add(SkippedMessage(obj, "empty bounds after layout"));
+                    capture.Skipped.Add(SkippedMessage(document, obj, "empty bounds after layout"));
                     continue;
                 }
                 capture.Objects.Add(obj.InstanceGuid, obj);
@@ -128,7 +153,7 @@ namespace HopperFormat
                     if (param.Attributes == null) param.CreateAttributes();
                     owner = param.Attributes.GetTopLevel.DocObject;
                 }
-                if (laidOut.Add(owner.InstanceGuid)) LayoutObject(owner);
+                if (laidOut.Add(owner.InstanceGuid)) LayoutObject(document, owner);
                 return owner;
             }
             foreach (var obj in capture.Objects.Values.Where(IsNode))
@@ -170,11 +195,12 @@ namespace HopperFormat
                         GroupMembership.Ancestors(document, new[] { c.InstanceGuid }).Contains(a))).Select(Build).ToArray();
                     var childIds = new HashSet<Guid>(children.SelectMany(MemberIds));
                     var direct = group.ObjectIDs.Where(id => !childIds.Contains(id)).Distinct().ToArray();
-                    var g = new HierarchyGroup { Id = group.InstanceGuid, Label = Label(group), Children = children.Where(c => MemberIds(c).Any()).ToArray(),
+                    var g = new HierarchyGroup { Id = group.InstanceGuid, Children = children.Where(c => MemberIds(c).Any()).ToArray(),
                         Nodes = direct.Where(nodeById.ContainsKey).Select(id => nodeById[id]).ToArray(),
                         NonNodes = direct.Where(nonNodes.ContainsKey).Select(id => nonNodes[id]).ToArray(),
                         Locked = (group.NickName ?? string.Empty).IndexOf("[lock]", StringComparison.OrdinalIgnoreCase) >= 0 };
-                    LayoutObject(group);
+                    LayoutObject(document, group);
+                    g.Label = DescribeGroup(document, group);
                     if (!MemberIds(g).Any()) { built.Add(g.Id, g); return g; }
                     // Measure padding against the same raw members the host used.
                     // Excluded empty rectangles must not turn into expanding padding

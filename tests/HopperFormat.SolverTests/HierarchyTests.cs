@@ -13,7 +13,7 @@ internal static class HierarchyTests
     private static Edge E(Node a, Node b, int input = 0, int output = 0) => new Edge {
         From = a.Id, To = b.Id, FromPort = output, ToPort = input };
     private static HierarchyGroup G(int id, Node[] nodes, params HierarchyGroup[] children) => new HierarchyGroup {
-        Id = Id(id), Label = "G" + id, Nodes = nodes, Children = children, Padding = new Padding(10, 20, 12, 14) };
+        Id = Id(id), Label = "'G" + id + "'", Nodes = nodes, Children = children, Padding = new Padding(10, 20, 12, 14) };
     private static IEnumerable<Node> Nodes(HierarchyGroup g) => g.Nodes.Concat(g.Children.SelectMany(Nodes)).GroupBy(n => n.Id).Select(a => a.First());
     private static IEnumerable<HierarchyGroup> Groups(HierarchyGroup g) => new[] { g }.Concat(g.Children.SelectMany(Groups));
     private static void Assert(bool ok, string message) { if (!ok) throw new Exception(message); }
@@ -197,7 +197,7 @@ internal static class HierarchyTests
             var label = G(102, new[] { a });
             var s = new HierarchySnapshot { Groups = new[] { root,label }, Edges = new[] { E(a,b),E(b,c) } };
             var r = Solve(s);
-            Assert(r.Log.Contains("Group 'G101' was laid out with 'G100': its wires leave and re-enter it"), "missing dissolve line");
+            Assert(r.Log.Contains("'G101' was laid out with 'G100': its wires leave and re-enter it"), "missing dissolve line");
             Assert(!r.GroupBoxes.ContainsKey(Id(103)) && !r.GroupBoxes.ContainsKey(Id(104)), "empty boxes became layout units");
             Assert(r.Tops[a.Id].X < r.Tops[b.Id].X && r.Tops[b.Id].X < r.Tops[c.Id].X, "parent was not laid out directly");
             Assert(r.GroupBoxes[label.Id].X == r.Tops[a.Id].X - label.Padding.Left, "overlapping label did not follow node");
@@ -209,8 +209,8 @@ internal static class HierarchyTests
             var s = new HierarchySnapshot { Groups = new[] { root }, Edges = Enumerable.Range(0,4).Select(i => E(n[i],n[i+1])).ToArray() };
             var r = Solve(s);
             Assert(r.Log.Where(l => l.Contains("its wires leave and re-enter it")).SequenceEqual(new[] {
-                "Group 'G101' was laid out with 'G100': its wires leave and re-enter it",
-                "Group 'G102' was laid out with 'G100': its wires leave and re-enter it" }),"did not recheck or used unstable dissolve order");
+                "'G101' was laid out with 'G100': its wires leave and re-enter it",
+                "'G102' was laid out with 'G100': its wires leave and re-enter it" }),"did not recheck or used unstable dissolve order");
             Stable(s,r); WholeUnitMoves(s,r);
         });
         Check("Hierarchy empty-bounds nodes are excluded and reported without refusing their group", () => {
