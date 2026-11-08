@@ -192,7 +192,8 @@ namespace HopperFormat
                     var outcome = FormatAllSolver.Solve(all.Snapshot);
                     var layout = outcome.Layout;
                     foreach (var line in layout.Log)
-                        if (line.StartsWith("Skipped", StringComparison.Ordinal) || line.Contains("Unstable:", StringComparison.Ordinal)) _log.Add(line);
+                        if (line.StartsWith("Skipped", StringComparison.Ordinal) || line.StartsWith("Format all:", StringComparison.Ordinal)
+                            || line.Contains("its wires leave and re-enter it") || line.Contains("Unstable:", StringComparison.Ordinal)) _log.Add(line);
                         else _detail.Add(line);
                     if (!layout.Success) { Finish(layout.Diagnostic); return; }
                     bool applied = FormatApplier.Apply(_document, layout.Moves, all.Objects, out var allStatus, true, true);
@@ -214,7 +215,7 @@ namespace HopperFormat
                 if (capture.Objects.Count == 0) { Finish("Select components to format"); return; }
                 var result = capture.Hierarchy == null ? _solve(capture.Snapshot) : HierarchySolver.Solve(capture.Hierarchy);
                 foreach (var line in result.Log)
-                    if (result.Unstable && line.StartsWith("Unstable:", StringComparison.Ordinal)) _log.Add(line);
+                    if (line.Contains("its wires leave and re-enter it") || result.Unstable && line.StartsWith("Unstable:", StringComparison.Ordinal)) _log.Add(line);
                     else _detail.Add(line);
                 if (!result.Success) { Finish(result.Diagnostic); return; }
                 var success = FormatApplier.Apply(_document, result.Moves, capture.Objects, out var status, capture.ContainsGroups);

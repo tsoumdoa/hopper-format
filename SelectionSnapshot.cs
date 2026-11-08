@@ -162,7 +162,6 @@ namespace HopperFormat
                 var built = new Dictionary<Guid, HierarchyGroup>();
                 IEnumerable<Guid> MemberIds(HierarchyGroup g) => g.Nodes.Select(n => n.Id).Concat(g.NonNodes.Select(n => n.Id))
                     .Concat(g.Children.SelectMany(MemberIds)).Distinct();
-                Box Bounds(Guid id) => nodeById.TryGetValue(id, out var n) ? new Box(n.CurrentTop.X, n.CurrentTop.Y, n.Width, n.Height) : nonNodes[id].Bounds;
                 HierarchyGroup Build(GH_Group group)
                 {
                     if (built.TryGetValue(group.InstanceGuid, out var previous)) return previous;
@@ -171,15 +170,18 @@ namespace HopperFormat
                         GroupMembership.Ancestors(document, new[] { c.InstanceGuid }).Contains(a))).Select(Build).ToArray();
                     var childIds = new HashSet<Guid>(children.SelectMany(MemberIds));
                     var direct = group.ObjectIDs.Where(id => !childIds.Contains(id)).Distinct().ToArray();
-                    var g = new HierarchyGroup { Id = group.InstanceGuid, Label = Label(group), Children = children,
+                    var g = new HierarchyGroup { Id = group.InstanceGuid, Label = Label(group), Children = children.Where(c => MemberIds(c).Any()).ToArray(),
                         Nodes = direct.Where(nodeById.ContainsKey).Select(id => nodeById[id]).ToArray(),
                         NonNodes = direct.Where(nonNodes.ContainsKey).Select(id => nonNodes[id]).ToArray(),
                         Locked = (group.NickName ?? string.Empty).IndexOf("[lock]", StringComparison.OrdinalIgnoreCase) >= 0 };
                     LayoutObject(group);
-                    var envelope = g.Nodes.Select(n => Bounds(n.Id)).Concat(g.NonNodes.Select(n => n.Bounds))
-                        .Concat(children.Select(c => byId[c.Id].Attributes.Bounds)
-                            .Select(b => new Box(b.X, b.Y, b.Width, b.Height))).ToArray();
-                    if (envelope.Length == 0) throw new InvalidOperationException($"Group '{g.Label}' has no measurable members");
+                    if (!MemberIds(g).Any()) { built.Add(g.Id, g); return g; }
+                    // Measure padding against the same raw members the host used.
+                    // Excluded empty rectangles must not turn into expanding padding
+                    // when their measurable siblings move on a subsequent run.
+                    var envelope = group.ObjectIDs.Where(byId.ContainsKey).Select(id => byId[id])
+                        .Where(o => o.Attributes != null).Select(o => o.Attributes.Bounds)
+                        .Select(b => new Box(b.X, b.Y, b.Width, b.Height)).ToArray();
                     var bounds = group.Attributes.Bounds;
                     g.Padding = new Padding(envelope.Min(b => b.X) - bounds.Left, envelope.Min(b => b.Y) - bounds.Top,
                         bounds.Right - envelope.Max(b => b.Right), bounds.Bottom - envelope.Max(b => b.Bottom));

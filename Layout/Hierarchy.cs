@@ -72,6 +72,9 @@ namespace HopperFormat.Layout
             private readonly Dictionary<Guid, Box> boxes = new Dictionary<Guid, Box>();
             private readonly Dictionary<Guid, Box> originalBoxes = new Dictionary<Guid, Box>();
             private readonly List<string> log = new List<string>();
+            private readonly HashSet<Guid> dissolved = new HashSet<Guid>();
+            private readonly Dictionary<Guid, int> depths = new Dictionary<Guid, int>();
+            private readonly HashSet<Guid> excluded = new HashSet<Guid>();
             private bool unstable;
             private int rounds;
 
@@ -83,12 +86,18 @@ namespace HopperFormat.Layout
                     throw new InvalidOperationException("Hierarchy collections and options must be present.");
                 if (snapshot.Groups.Any(g => g == null)) throw new InvalidOperationException("Null hierarchy group.");
                 foreach (var group in snapshot.Groups.OrderBy(g => g.Id)) Collect(group, Array.Empty<Guid>());
-                foreach (var node in snapshot.LooseNodes) AddNode(node);
+                foreach (var node in snapshot.LooseNodes.OrderBy(n => n == null ? Guid.Empty : n.Id)) AddNode(node);
+                this.snapshot = new HierarchySnapshot { Groups = snapshot.Groups, LooseNodes = snapshot.LooseNodes.Where(n => !excluded.Contains(n.Id)).ToArray(),
+                    Edges = snapshot.Edges.Where(e => e == null || !excluded.Contains(e.From) && !excluded.Contains(e.To)).ToArray(),
+                    Inbound = snapshot.Inbound.Where(e => e == null || !excluded.Contains(e.Node)).ToArray(),
+                    Outbound = snapshot.Outbound.Where(e => e == null || !excluded.Contains(e.Node)).ToArray(), Options = snapshot.Options };
+                snapshot = this.snapshot;
                 foreach (var entry in owners)
                     for (int i = 0; i < entry.Value.Count; i++)
                         for (int j = i + 1; j < entry.Value.Count; j++)
                         {
-                            var a = entry.Value[i]; var b = entry.Value[j];
+                            var a = entry.Value[i].Where(id => !LabelGroup(groups[id])).ToArray();
+                            var b = entry.Value[j].Where(id => !LabelGroup(groups[id])).ToArray();
                             if (!a.Take(Math.Min(a.Length, b.Length)).SequenceEqual(b.Take(Math.Min(a.Length, b.Length))))
                                 throw new InvalidOperationException("Overlapping membership for '" + Label(entry.Key) + "'.");
                         }
@@ -112,6 +121,11 @@ namespace HopperFormat.Layout
             private void AddNode(Node n)
             {
                 if (n == null) throw new InvalidOperationException("Null hierarchy node.");
+                if (Graph.Finite(n.Width) && Graph.Finite(n.Height) && (n.Width <= 0 || n.Height <= 0))
+                {
+                    if (excluded.Add(n.Id)) log.Add("Skipped node '" + n.Label + "': empty bounds after layout");
+                    return;
+                }
                 if (nonNodes.ContainsKey(n.Id) || groups.ContainsKey(n.Id)) throw new InvalidOperationException("Duplicate object identifier.");
                 if (!nodes.ContainsKey(n.Id)) nodes.Add(n.Id, n);
             }
@@ -129,11 +143,13 @@ namespace HopperFormat.Layout
                 if (new[] { p.Left, p.Top, p.Right, p.Bottom }.Any(v => !Graph.Finite(v) || v < 0))
                     throw new InvalidOperationException("Invalid padding for '" + group.Label + "'.");
                 groups.Add(group.Id, group);
+                depths.Add(group.Id, path.Length);
                 var next = path.Concat(new[] { group.Id }).ToArray();
                 var ids = new HashSet<Guid>();
-                foreach (var n in group.Nodes)
+                foreach (var n in group.Nodes.OrderBy(n => n == null ? Guid.Empty : n.Id))
                 {
-                    AddNode(n); ids.Add(n.Id); Own(n.Id, next);
+                    AddNode(n);
+                    if (!excluded.Contains(n.Id)) { ids.Add(n.Id); Own(n.Id, next); }
                 }
                 foreach (var item in group.NonNodes)
                 {
@@ -168,33 +184,85 @@ namespace HopperFormat.Layout
                 b.Width + p.Left + p.Right, b.Height + p.Top + p.Bottom);
             private Box OriginalBox(HierarchyGroup g)
             {
-                foreach (var child in g.Children) OriginalBox(child);
-                var content = Envelope(PhysicalIds(g).Select(ObjectBox).Concat(g.Children.Select(c => originalBoxes[c.Id])));
+                foreach (var child in MeasurableChildren(g)) OriginalBox(child);
+                if (members[g.Id].Count == 0) return default;
+                var content = Envelope(PhysicalIds(g).Select(ObjectBox).Concat(MeasurableChildren(g).Select(c => originalBoxes[c.Id])));
                 return originalBoxes[g.Id] = Pad(content, g.Padding);
             }
-            private IEnumerable<HierarchyGroup> RealChildren(HierarchyGroup g) => g.Children.Where(c => !LabelGroup(c));
+            private IEnumerable<HierarchyGroup> MeasurableChildren(HierarchyGroup g) => g.Children.Where(c => members[c.Id].Count > 0);
+            private IEnumerable<HierarchyGroup> LayoutChildren(HierarchyGroup g) => MeasurableChildren(g)
+                .SelectMany(c => dissolved.Contains(c.Id) ? LayoutChildren(c) : new[] { c });
+            private IEnumerable<HierarchyGroup> RealChildren(HierarchyGroup g) => LayoutChildren(g).Where(c => !LabelGroup(c));
             // Labels affect the visible box (and therefore measured padding), but never
             // compete as layout units. Keep those envelopes separate.
             private IEnumerable<Guid> PhysicalIds(HierarchyGroup g)
             {
                 var indirect = new HashSet<Guid>(g.Children.SelectMany(c => members[c.Id]));
-                return g.Nodes.Select(n => n.Id).Concat(g.NonNodes.Select(n => n.Id)).Where(id => !indirect.Contains(id)).Distinct();
+                return g.Nodes.Select(n => n.Id).Concat(g.NonNodes.Select(n => n.Id)).Where(id => !excluded.Contains(id) && !indirect.Contains(id)).Distinct();
             }
+            private IEnumerable<Guid> LayoutPhysicalIds(HierarchyGroup g) => PhysicalIds(g)
+                .Concat(g.Children.Where(c => dissolved.Contains(c.Id)).SelectMany(LayoutPhysicalIds)).Distinct();
             private IEnumerable<Guid> DirectIds(HierarchyGroup g)
             {
-                var childIds = new HashSet<Guid>(g.Children.SelectMany(c => members[c.Id]));
-                return g.Nodes.Select(n => n.Id).Concat(g.NonNodes.Select(n => n.Id)).Where(id => !childIds.Contains(id))
-                    .Concat(g.Children.Where(LabelGroup).SelectMany(c => members[c.Id])).Distinct().OrderBy(id => id);
+                var childIds = new HashSet<Guid>(RealChildren(g).SelectMany(c => members[c.Id]));
+                return members[g.Id].Where(id => !childIds.Contains(id)).OrderBy(id => id);
+            }
+
+            // Dissolution changes only the layout tree. Visible boxes still follow
+            // the original membership tree, including all padding and label boxes.
+            private void DissolveCycles()
+            {
+                while (true)
+                {
+                    var candidates = new List<(HierarchyGroup Child, HierarchyGroup Parent)>();
+                    foreach (var parent in groups.Values.Where(g => !dissolved.Contains(g.Id)))
+                    {
+                        var children = RealChildren(parent).ToArray();
+                        var owner = members[parent.Id].ToDictionary(id => id, id => id);
+                        foreach (var child in children) foreach (var id in members[child.Id]) owner[id] = child.Id;
+                        var links = snapshot.Edges.Where(e => owner.ContainsKey(e.From) && owner.ContainsKey(e.To))
+                            .Select(e => (From: owner[e.From], To: owner[e.To])).Where(e => e.From != e.To).Distinct().ToArray();
+                        foreach (var child in children)
+                        {
+                            var seen = new HashSet<Guid>(); var queue = new Queue<Guid>(links.Where(e => e.From == child.Id).Select(e => e.To));
+                            while (queue.Count > 0)
+                            {
+                                var id = queue.Dequeue();
+                                if (id == child.Id) { candidates.Add((child, parent)); break; }
+                                if (seen.Add(id)) foreach (var link in links.Where(e => e.From == id)) queue.Enqueue(link.To);
+                            }
+                        }
+                    }
+                    if (candidates.Count == 0) return;
+                    var next = candidates.OrderBy(c => depths[c.Child.Id]).ThenBy(c => c.Child.Id).ThenBy(c => c.Parent.Id).First();
+                    dissolved.Add(next.Child.Id);
+                    log.Add("Group '" + next.Child.Label + "' was laid out with '" + next.Parent.Label + "': its wires leave and re-enter it");
+                }
+            }
+
+            private Unit[] UniqueUnits(IEnumerable<Unit> source)
+            {
+                var result = new List<Unit>();
+                foreach (var unit in source.OrderBy(u => u.Node.Kind == NodeKind.Group ? 0 : 1).ThenBy(u => u.Node.Id))
+                {
+                    var previous = result.FirstOrDefault(u => u.Members.Contains(unit.Node.Id));
+                    if (previous != null) { previous.Members.UnionWith(unit.Members); continue; }
+                    unit.Members = new HashSet<Guid>(unit.Members);
+                    result.Add(unit);
+                }
+                return result.ToArray();
             }
 
             internal Result Solve()
             {
+                DissolveCycles();
+                var roots = snapshot.Groups.Where(g => members[g.Id].Count > 0).ToArray();
                 var covered = new HashSet<Guid>(snapshot.Groups.SelectMany(g => members[g.Id]));
                 var loose = snapshot.LooseNodes.Where(n => !covered.Contains(n.Id)).OrderBy(n => n.Id).ToArray();
-                var originalUnits = snapshot.Groups.Select(g => LabelGroup(g) ? ObjectBox(members[g.Id].Single(nodes.ContainsKey)) : originalBoxes[g.Id])
+                var originalUnits = roots.Select(g => LabelGroup(g) ? ObjectBox(members[g.Id].Single(nodes.ContainsKey)) : originalBoxes[g.Id])
                     .Concat(loose.Select(n => ObjectBox(n.Id))).ToArray();
-                foreach (var g in snapshot.Groups.OrderBy(g => g.Id)) SolveGroup(g);
-                var units = snapshot.Groups.Select(GroupUnit).Concat(loose.Select(NodeUnit)).ToArray();
+                foreach (var g in roots.OrderBy(g => g.Id)) SolveGroup(g);
+                var units = UniqueUnits(roots.Select(GroupUnit).Concat(loose.Select(NodeUnit)));
                 if (units.Length > 1 || snapshot.Groups.Count == 0)
                 {
                     var anchor = originalUnits.Length == 0 ? new Vec2(0, 0) :
@@ -230,14 +298,15 @@ namespace HopperFormat.Layout
                     var before = Envelope(oldUnits);
                     // A see-through label uses only its node's footprint, while all
                     // of its members still translate together at this outer level.
-                    var units = PhysicalIds(g).Where(nodes.ContainsKey).Select(id => NodeUnit(nodes[id]))
-                        .Concat(g.Children.Select(GroupUnit)).ToArray();
+                    var labelIds = new HashSet<Guid>(LayoutChildren(g).Where(LabelGroup).SelectMany(c => members[c.Id]));
+                    var units = UniqueUnits(direct.Where(id => nodes.ContainsKey(id) && !labelIds.Contains(id)).Select(id => NodeUnit(nodes[id]))
+                        .Concat(LayoutChildren(g).Select(GroupUnit)));
                     SolveLevel(units, new Vec2(before.X, before.Y), g.Label);
                     var after = Envelope(direct.Where(nodes.ContainsKey).Select(ObjectBox)
                         .Concat(children.Select(c => boxes[c.Id])));
                     double growthX = Math.Max(0, Math.Ceiling(after.Right - before.Right - 1e-7)),
                         growthY = Math.Max(0, Math.Ceiling(after.Bottom - before.Bottom - 1e-7));
-                    foreach (var id in PhysicalIds(g).Where(nonNodes.ContainsKey).OrderBy(id => id))
+                    foreach (var id in LayoutPhysicalIds(g).Where(nonNodes.ContainsKey).OrderBy(id => id))
                     {
                         var note = ObjectBox(id);
                         tops[id] = new Vec2(note.X + (note.X >= before.Right ? growthX : 0),
@@ -263,9 +332,10 @@ namespace HopperFormat.Layout
             private void RefreshBoxes() { foreach (var g in snapshot.Groups) RefreshBox(g); }
             private Box RefreshBox(HierarchyGroup g)
             {
-                foreach (var child in g.Children) RefreshBox(child);
+                foreach (var child in MeasurableChildren(g)) RefreshBox(child);
+                if (members[g.Id].Count == 0) return default;
                 return boxes[g.Id] = Pad(Envelope(PhysicalIds(g).Select(ObjectBox)
-                    .Concat(g.Children.Select(c => boxes[c.Id]))), g.Padding);
+                    .Concat(MeasurableChildren(g).Select(c => boxes[c.Id]))), g.Padding);
             }
             private Unit NodeUnit(Node n) => new Unit { Node = new Node { Id = n.Id, Label = n.Label, Kind = n.Kind,
                 Width = n.Width, Height = n.Height, CurrentTop = tops[n.Id], PivotOffset = n.PivotOffset,

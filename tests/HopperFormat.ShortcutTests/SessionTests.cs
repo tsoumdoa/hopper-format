@@ -142,11 +142,25 @@ internal static class SessionTests
             Assert(f.Session.Status == status && f.Session.LastMoves == moves && f.Session.Log(true).SequenceEqual(log)
                 && f.Owner.OutputRefreshes == refreshes && f.Document.UndoUtil.Creates == undos,"first tap changed prior outputs");
         });
+        Check(form, "Session format-all Log exposes skipped and dissolved counts without Debug", f =>
+        {
+            var third = new TestComponent { NickName = "Third", InitialPivot = new PointF(90,90) };
+            var child = new GH_Group { NickName = "Re-entered child", Document = f.Document };
+            child.ObjectIDs.AddRange(new[] { f.First.InstanceGuid,f.Second.InstanceGuid });
+            var root = new GH_Group { NickName = "Root", Document = f.Document }; root.ObjectIDs.AddRange(new[] { child.InstanceGuid,third.InstanceGuid });
+            var lockedNode = new TestComponent(); var locked = new GH_Group { NickName = "Fixed [lock]", Document = f.Document }; locked.ObjectIDs.Add(lockedNode.InstanceGuid);
+            TestParam.Connect(f.First.Params.Output[0],third.Params.Input[0]);
+            TestParam.Connect(third.Params.Output[0],f.Second.Params.Input[0]);
+            f.Document.Objects.AddRange(new IGH_DocumentObject[] { third,child,root,lockedNode,locked });
+            f.Session.RunAll();
+            Assert(f.Session.Status.Contains("1 skipped") && f.Session.Log(false).Any(l => l.Contains("1 skipped, 1 dissolved"))
+                && f.Session.Log(false).Contains("Group 'Re-entered child' was laid out with 'Root': its wires leave and re-enter it"),"counts or dissolution hidden in Debug");
+        });
         Check(form, "Session only skipped groups show No groups to format and never arm a second tap", f =>
         {
             f.Session.Run();
             var a = new GH_Group(); var b = new GH_Group();
-            a.ObjectIDs.Add(f.First.InstanceGuid); b.ObjectIDs.Add(f.First.InstanceGuid);
+            a.ObjectIDs.AddRange(new[] { f.First.InstanceGuid, f.Second.InstanceGuid }); b.ObjectIDs.AddRange(new[] { f.First.InstanceGuid, f.Second.InstanceGuid });
             f.Document.Objects.AddRange(new[] { a,b }); f.Document.Selection.Clear();
             var status = f.Session.Status; var moves = f.Session.LastMoves; var log = f.Session.Log(true).ToArray();
             var refreshes = f.Owner.OutputRefreshes; var undos = f.Document.UndoUtil.Creates;
