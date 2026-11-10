@@ -192,11 +192,13 @@ namespace HopperFormat.Layout
             for (int c = 0; c < columns.Length; c++)
             {
                 var column = columns[c];
-                double width = column.Where(i => !i.Virtual).Select(i => i.Node.Width).DefaultIfEmpty(0).Max();
-                bool groupsOnly = column.Where(i => !i.Virtual).All(i => i.Node.Kind == NodeKind.Group);
-                foreach (var item in column.Where(i => !i.Virtual))
-                    tops.Add(item.Node.Id, new Vec2(left + (groupsOnly ? 0 : width - item.Node.Width),
-                        blockOf[item].Top + offsets[item]));
+                var real = column.Where(i => !i.Virtual).ToArray();
+                bool groupsOnly = real.All(i => PureGroup(i.Node));
+                double edge = real.Select(i => AlignEdge(i.Node)).DefaultIfEmpty(0).Max();
+                double Indent(Node n) => groupsOnly ? 0 : edge - AlignEdge(n);
+                double width = real.Select(i => Indent(i.Node) + i.Node.Width).DefaultIfEmpty(0).Max();
+                foreach (var item in real)
+                    tops.Add(item.Node.Id, new Vec2(left + Indent(item.Node), blockOf[item].Top + offsets[item]));
                 bool groupGap = column.Any(i => !i.Virtual && i.Node.Kind == NodeKind.Group) ||
                     c + 1 < columns.Length && columns[c + 1].Any(i => !i.Virtual && i.Node.Kind == NodeKind.Group);
                 left += width + (groupGap ? graph.Options.GroupGapX : graph.Options.GapX);
@@ -223,6 +225,10 @@ namespace HopperFormat.Layout
             }
             return graph.Options.GapY;
         }
+
+        internal static double AlignEdge(Node n) => n.AlignRight > 0 ? n.AlignRight : n.Width;
+        // Group-only columns align left edges; a labelled param keeps its param alignment.
+        internal static bool PureGroup(Node n) => n.Kind == NodeKind.Group && !n.ParamRole;
 
         internal static bool GroupLink(Node a, Node b) => a.Kind == NodeKind.Group && b.Kind == NodeKind.Group;
 

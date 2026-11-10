@@ -182,7 +182,23 @@ namespace HopperFormat.Layout
                 if (!owners.TryGetValue(id, out var list)) owners.Add(id, list = new List<Guid[]>());
                 list.Add(path);
             }
+            // Ownership: a single-node group never creates a second layout owner.
             private bool LabelGroup(HierarchyGroup group) => members[group.Id].Count(nodes.ContainsKey) == 1;
+            // Layout: a label is see-through only while its node's footprint is its whole
+            // visible content. Notes give it a footprint of its own, so it then reserves
+            // its box like a real group, unless a member also belongs to an unrelated
+            // group: that space is not the label's alone, so it follows its node instead.
+            private bool SeeThrough(HierarchyGroup group) => LabelGroup(group) &&
+                (!members[group.Id].Any(nonNodes.ContainsKey) || members[group.Id].Any(Shared));
+            private bool Shared(Guid id)
+            {
+                var paths = owners[id];
+                bool Prefix(Guid[] a, Guid[] b) => a.Length <= b.Length && a.SequenceEqual(b.Take(a.Length));
+                for (int i = 0; i < paths.Count; i++)
+                    for (int j = i + 1; j < paths.Count; j++)
+                        if (!Prefix(paths[i], paths[j]) && !Prefix(paths[j], paths[i])) return true;
+                return false;
+            }
             private Box ObjectBox(Guid id)
             {
                 var t = tops[id];
@@ -208,7 +224,7 @@ namespace HopperFormat.Layout
             private IEnumerable<HierarchyGroup> MeasurableChildren(HierarchyGroup g) => g.Children.Where(c => members[c.Id].Count > 0);
             private IEnumerable<HierarchyGroup> LayoutChildren(HierarchyGroup g) => MeasurableChildren(g)
                 .SelectMany(c => dissolved.Contains(c.Id) ? LayoutChildren(c) : new[] { c });
-            private IEnumerable<HierarchyGroup> RealChildren(HierarchyGroup g) => LayoutChildren(g).Where(c => !LabelGroup(c));
+            private IEnumerable<HierarchyGroup> RealChildren(HierarchyGroup g) => LayoutChildren(g).Where(c => !SeeThrough(c));
             // Labels affect the visible box (and therefore measured padding), but never
             // compete as layout units. Keep those envelopes separate.
             private IEnumerable<Guid> PhysicalIds(HierarchyGroup g)
@@ -276,7 +292,7 @@ namespace HopperFormat.Layout
                 var roots = snapshot.Groups.Where(g => members[g.Id].Count > 0).ToArray();
                 var covered = new HashSet<Guid>(snapshot.Groups.SelectMany(g => members[g.Id]));
                 var loose = snapshot.LooseNodes.Where(n => !covered.Contains(n.Id)).OrderBy(n => n.Id).ToArray();
-                var originalUnits = roots.Select(g => LabelGroup(g) ? ObjectBox(members[g.Id].Single(nodes.ContainsKey)) : originalBoxes[g.Id])
+                var originalUnits = roots.Select(g => SeeThrough(g) ? ObjectBox(members[g.Id].Single(nodes.ContainsKey)) : originalBoxes[g.Id])
                     .Concat(loose.Select(n => ObjectBox(n.Id))).ToArray();
                 foreach (var g in roots.OrderBy(g => g.Id)) SolveGroup(g);
                 var units = UniqueUnits(roots.Select(GroupUnit).Concat(loose.Select(NodeUnit)));
@@ -316,7 +332,7 @@ namespace HopperFormat.Layout
                     var before = Envelope(oldUnits);
                     // A see-through label uses only its node's footprint, while all
                     // of its members still translate together at this outer level.
-                    var labelIds = new HashSet<Guid>(LayoutChildren(g).Where(LabelGroup).SelectMany(c => members[c.Id]));
+                    var labelIds = new HashSet<Guid>(LayoutChildren(g).Where(SeeThrough).SelectMany(c => members[c.Id]));
                     var units = UniqueUnits(direct.Where(id => nodes.ContainsKey(id) && !labelIds.Contains(id)).Select(id => NodeUnit(nodes[id]))
                         .Concat(LayoutChildren(g).Select(GroupUnit)));
                     SolveLevel(units, new Vec2(before.X, before.Y), g.Label);
@@ -360,7 +376,7 @@ namespace HopperFormat.Layout
                 Inputs = n.Inputs, Outputs = n.Outputs, Widget = n.Widget }, Members = new HashSet<Guid> { n.Id } };
             private Unit GroupUnit(HierarchyGroup g)
             {
-                if (LabelGroup(g))
+                if (SeeThrough(g))
                 {
                     var labelUnit = NodeUnit(nodes[members[g.Id].Single(nodes.ContainsKey)]);
                     labelUnit.Members = members[g.Id];
@@ -374,6 +390,13 @@ namespace HopperFormat.Layout
                 var u = new Unit { Members = members[g.Id], Node = new Node { Id = g.Id, Label = g.Label, Kind = NodeKind.Group,
                     CurrentTop = new Vec2(b.X, b.Y), Width = b.Width, Height = b.Height,
                     PivotOffset = new Vec2(pivot.X - b.X, pivot.Y - b.Y) } };
+                if (LabelGroup(g))
+                {
+                    // A label with notes reserves its whole box but keeps its node's role.
+                    var only = nodes[members[g.Id].Single(nodes.ContainsKey)];
+                    u.Node.ParamRole = only.Kind == NodeKind.Param;
+                    u.Node.AlignRight = tops[only.Id].X + only.Width - b.X;
+                }
                 // Synthetic port indices follow their visible vertical order. Endpoint
                 // identities remain separate, including parallel wires on different ports.
                 var inputs = snapshot.Edges.Where(e => u.Members.Contains(e.To) && !u.Members.Contains(e.From)).Select(e => (e.To, e.ToPort))

@@ -48,7 +48,11 @@ groups move as rigid blocks; scribbles and markup inside them keep their offsets
 and translate with their group.
 
 A label group containing exactly one node, transitively, is see-through: its node
-uses the ordinary layout rules and its label follows. Overlapping membership between
+uses the ordinary layout rules and its label follows. A single-node group that also
+holds a scribble or markup is not see-through: it moves as one block, and its full
+visible box, scribble text included, keeps clear of its neighbours. Its node keeps
+its usual column and lines up with the other nodes there, so a labelled output
+param still sits in the last column alongside unlabelled ones. Overlapping membership between
 unrelated multi-node groups refuses the run and names the object; overlap with a
 label group is allowed. Nested children whose wires leave and re-enter them are
 laid out with their parent and logged. Empty nested groups are ignored, and nodes
@@ -150,7 +154,7 @@ HopperFormat is published as a beta. In Rhino 8, run `PackageManager`, tick
 **Include pre-releases**, search for `hopperformat` and install. Or close Rhino and run:
 
 ```text
-yak install hopperformat 0.1.0-beta.2
+yak install hopperformat 0.1.0-beta.3
 ```
 
 ## Install locally
@@ -159,7 +163,7 @@ Close Rhino first. From the repository root in **Git Bash on Windows**, build,
 test, package, and install locally with:
 
 ```bash
-./scripts/release-yak.sh 0.1.0-beta.2 --allow-dirty --install
+./scripts/release-yak.sh 0.1.0-beta.3 --allow-dirty --install
 ```
 
 The script replaces an already installed copy of the same version so a rebuilt
@@ -172,7 +176,7 @@ To install the built package manually from PowerShell, run this command from
 the repository root, using the artifact folder as the source:
 
 ```powershell
-& "C:\Program Files\Rhino 8\System\Yak.exe" install --source "$PWD\artifacts\yak" hopperformat 0.1.0-beta.2
+& "C:\Program Files\Rhino 8\System\Yak.exe" install --source "$PWD\artifacts\yak" hopperformat 0.1.0-beta.3
 ```
 
 Restart Rhino and open Grasshopper after installation to load the new build.

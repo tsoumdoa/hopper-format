@@ -6,6 +6,7 @@ namespace HopperFormat.Layout
 {
     internal static class Ranking
     {
+        private static bool ParamLike(Node n) => n.Kind == NodeKind.Param || n.ParamRole;
         internal static List<List<Node>> Assign(Graph graph, out Dictionary<Guid, int> ranks, bool recoverColumns = false)
         {
             var assigned = new Dictionary<Guid, int>();
@@ -48,7 +49,7 @@ namespace HopperFormat.Layout
                 var pinned = new HashSet<Guid>();
                 foreach (var next in order)
                     if (graph.Options.ReturnConstraint && graph.Out[next.Id].Count == 0 &&
-                        (graph.Returns.Contains(next.Id) || next.Kind == NodeKind.Param && graph.In[next.Id].Count > 0))
+                        (graph.Returns.Contains(next.Id) || ParamLike(next) && graph.In[next.Id].Count > 0))
                     {
                         assigned[next.Id] = maximum;
                         pinned.Add(next.Id);
@@ -56,7 +57,7 @@ namespace HopperFormat.Layout
                 for (int i = order.Length - 1; i >= 0; i--)
                 {
                     var next = order[i];
-                    bool inputParam = graph.Options.ReturnConstraint && next.Kind == NodeKind.Param &&
+                    bool inputParam = graph.Options.ReturnConstraint && ParamLike(next) &&
                         graph.In[next.Id].Count == 0 && externalInputs.Contains(next.Id);
                     if (graph.Out[next.Id].Count == 0 || graph.Returns.Contains(next.Id) ||
                         pinned.Contains(next.Id) || inputParam) continue;
@@ -86,9 +87,10 @@ namespace HopperFormat.Layout
                     // The caller must verify the complete rounded geometry.
                     double Distance(Node n)
                     {
-                        bool groupsOnly = orphan.Kind == NodeKind.Group &&
-                            main.Where(m => assigned[m.Id] == assigned[n.Id]).All(m => m.Kind == NodeKind.Group);
-                        return Math.Abs(n.CurrentTop.X - orphan.CurrentTop.X + (groupsOnly ? 0 : n.Width - orphan.Width));
+                        bool groupsOnly = Placement.PureGroup(orphan) &&
+                            main.Where(m => assigned[m.Id] == assigned[n.Id]).All(Placement.PureGroup);
+                        return Math.Abs(n.CurrentTop.X - orphan.CurrentTop.X +
+                            (groupsOnly ? 0 : Placement.AlignEdge(n) - Placement.AlignEdge(orphan)));
                     }
                     var aligned = main.Where(n => Distance(n) < 1)
                         .OrderBy(Distance)

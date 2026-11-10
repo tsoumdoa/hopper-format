@@ -16,6 +16,8 @@ internal static class HierarchyTests
         Id = Id(id), Label = "'G" + id + "'", Nodes = nodes, Children = children, Padding = new Padding(10, 20, 12, 14) };
     private static IEnumerable<Node> Nodes(HierarchyGroup g) => g.Nodes.Concat(g.Children.SelectMany(Nodes)).GroupBy(n => n.Id).Select(a => a.First());
     private static IEnumerable<HierarchyGroup> Groups(HierarchyGroup g) => new[] { g }.Concat(g.Children.SelectMany(Groups));
+    // Fixtures never share a labelled node with an unrelated group, so notes alone decide.
+    private static bool SeeThrough(HierarchyGroup g) => Nodes(g).Count() == 1 && !Groups(g).SelectMany(c => c.NonNodes).Any();
     private static void Assert(bool ok, string message) { if (!ok) throw new Exception(message); }
     private static void Near(double a, double b, string message) => Assert(Math.Abs(a - b) < 1e-7, message + ": " + a + " != " + b);
     private static void Check(string name, Action test)
@@ -154,7 +156,7 @@ internal static class HierarchyTests
             Assert(Solve(Applied(s, r)).Log.Contains(line), "second run lost overlap log");
             Stable(s, r); Geometry(s, r);
         });
-        Check("Hierarchy see-through label notes translate with their node and report overlaps", () => {
+        Check("Hierarchy label notes translate with their node and report overlaps", () => {
             var a = N(1, 30, 60); var b = N(2, 180, 160);
             var label = G(101, new[] { b });
             var note = new NonNodeMember { Id = Id(300), Label = "Label note", Bounds = new Box(180, 210, 40, 25) };
@@ -165,6 +167,49 @@ internal static class HierarchyTests
             Near(r.Tops[note.Id].X - note.Bounds.X, r.Tops[b.Id].X - b.CurrentTop.X, "label note translation x");
             Near(r.Tops[note.Id].Y - note.Bounds.Y, r.Tops[b.Id].Y - b.CurrentTop.Y, "label note translation y");
             Assert(r.Log.Contains("Note 'Inside label' overlaps formatted nodes in 'G101'"), "missing label note overlap log");
+            Stable(s, r); Geometry(s, r); NotesClear(s, r);
+        });
+        Check("Hierarchy labels reserve their scribble size instead of only their node", () => {
+            // One source feeds two labelled params stacked in one column. Each label
+            // carries a large scribble under its param, much taller than the row gap.
+            var src = N(1, 0, 0); var p = N(2, 200, 0, 70, 20); var q = N(3, 200, 30, 70, 20);
+            var big1 = new NonNodeMember { Id = Id(300), Label = "Big 1", Bounds = new Box(200, 25, 260, 90) };
+            var big2 = new NonNodeMember { Id = Id(301), Label = "Big 2", Bounds = new Box(200, 55, 260, 90) };
+            var l1 = G(101, new[] { p }); l1.NonNodes = new[] { big1 };
+            var l2 = G(102, new[] { q }); l2.NonNodes = new[] { big2 };
+            var s = new HierarchySnapshot { Groups = new[] { G(100, new[] { src }, l1, l2) }, Edges = new[] { E(src, p), E(src, q) } };
+            var r = Solve(s);
+            Box Note(NonNodeMember n) => new Box(r.Tops[n.Id].X, r.Tops[n.Id].Y, n.Bounds.Width, n.Bounds.Height);
+            Assert(!Overlap(r.GroupBoxes[l1.Id], r.GroupBoxes[l2.Id]), "label boxes overlap");
+            Assert(!Overlap(Note(big1), Placed(q, r)) && !Overlap(Note(big2), Placed(p, r)), "scribble overlaps the other label's param");
+            Assert(!Overlap(Note(big1), Note(big2)), "scribbles overlap each other");
+            Near(r.Tops[big1.Id].X - big1.Bounds.X, r.Tops[p.Id].X - p.CurrentTop.X, "scribble follows its param x");
+            Near(r.Tops[big1.Id].Y - big1.Bounds.Y, r.Tops[p.Id].Y - p.CurrentTop.Y, "scribble follows its param y");
+            Stable(s, r); Geometry(s, r); NotesClear(s, r);
+        });
+        Check("Hierarchy labelled params with scribbles keep their output column and alignment", () => {
+            // Live Rhino fixture: one source feeds three output params. Two labels carry
+            // wide scribbles; the third has none. All three must share the last column,
+            // aligned on the params themselves, not pushed past the scribbles' right edge.
+            Node Param(int i, double x, double y) { var n = N(i, x, y, 70, 20); n.Kind = NodeKind.Param; n.PivotOffset = new Vec2(12, 7);
+                n.Inputs = new[] { new Vec2(0, 10) }; n.Outputs = new[] { new Vec2(70, 10) }; return n; }
+            var src = N(1, 0, 120, 140, 20); src.Kind = NodeKind.Param; src.Widget = true; src.Inputs = new[] { new Vec2(0, 10) }; src.Outputs = new[] { new Vec2(140, 10) };
+            var p1 = Param(2, 200, 0); var p2 = Param(3, 200, 150); var p3 = Param(4, 200, 300);
+            var n1 = new NonNodeMember { Id = Id(300), Label = "First large note", Bounds = new Box(220, 25, 630, 75) };
+            var n2 = new NonNodeMember { Id = Id(301), Label = "Second large note", Bounds = new Box(220, 175, 630, 75) };
+            var l1 = G(101, new[] { p1 }); l1.NonNodes = new[] { n1 };
+            var l2 = G(102, new[] { p2 }); l2.NonNodes = new[] { n2 };
+            var l3 = G(103, new[] { p3 });
+            var s = new HierarchySnapshot { Groups = new[] { G(100, new[] { src }, l1, l2, l3) }, Edges = new[] { E(src, p1), E(src, p2), E(src, p3) } };
+            var r = Solve(s);
+            double Right(Node n) => r.Tops[n.Id].X + n.Width;
+            Near(Right(p1), Right(p3), "labelled and plain params share a right edge");
+            Near(Right(p2), Right(p3), "labelled params share a right edge");
+            Assert(r.Tops[p1.Id].X > r.Tops[src.Id].X + src.Width, "params left of their source");
+            Assert(Right(p3) < n1.Bounds.Right - 300, "plain param pushed past the scribbles");
+            Box Note(NonNodeMember n) => new Box(r.Tops[n.Id].X, r.Tops[n.Id].Y, n.Bounds.Width, n.Bounds.Height);
+            foreach (var note in new[] { n1, n2 }) foreach (var p in new[] { p1, p2, p3 })
+                Assert(!Overlap(Note(note), Placed(p, r)), "scribble overlaps " + p.Label);
             Stable(s, r); Geometry(s, r); NotesClear(s, r);
         });
         Check("Hierarchy parent notes follow child-group growth before outer translation", () => {
@@ -325,9 +370,9 @@ internal static class HierarchyTests
     private static Box InitialUnits(HierarchyGroup g)
     {
         var indirect = new HashSet<Guid>(g.Children.SelectMany(Nodes).Select(n => n.Id));
-        return Envelope(g.Nodes.Where(n => !indirect.Contains(n.Id)).Concat(g.Children.Where(c => Nodes(c).Count() == 1).SelectMany(Nodes))
+        return Envelope(g.Nodes.Where(n => !indirect.Contains(n.Id)).Concat(g.Children.Where(c => SeeThrough(c)).SelectMany(Nodes))
             .Select(n => new Box(n.CurrentTop.X, n.CurrentTop.Y, n.Width, n.Height))
-            .Concat(g.Children.Where(c => Nodes(c).Count() != 1).Select(InitialBox)));
+            .Concat(g.Children.Where(c => !SeeThrough(c)).Select(InitialBox)));
     }
     private static void NotesClear(HierarchySnapshot s, Result r)
     {
@@ -358,12 +403,12 @@ internal static class HierarchyTests
             foreach (var n in Nodes(g)) { var b = B(n); Assert(b.X >= box.X - 1e-7 && b.Y >= box.Y - 1e-7 && b.Right <= box.Right + 1e-7 && b.Bottom <= box.Bottom + 1e-7, "node outside group"); }
             foreach (var child in g.Children) { var b = r.GroupBoxes[child.Id]; Assert(b.X >= box.X - 1e-7 && b.Y >= box.Y - 1e-7 && b.Right <= box.Right + 1e-7 && b.Bottom <= box.Bottom + 1e-7, "child box outside parent"); }
             foreach (var n in g.NonNodes) { var t = r.Tops[n.Id]; Assert(t.X >= box.X && t.Y >= box.Y && t.X + n.Bounds.Width <= box.Right && t.Y + n.Bounds.Height <= box.Bottom, "scribble outside group"); }
-            var real = g.Children.Where(c => Nodes(c).Count() != 1).ToArray();
+            var real = g.Children.Where(c => !SeeThrough(c)).ToArray();
             var indirect = new HashSet<Guid>(g.Children.SelectMany(Nodes).Select(n => n.Id));
             Apart(real.Select(c => r.GroupBoxes[c.Id]).Concat(g.Nodes.Where(n => !indirect.Contains(n.Id)).Select(B))
-                .Concat(g.Children.Where(c => Nodes(c).Count() == 1).SelectMany(Nodes).Select(B)).ToArray());
+                .Concat(g.Children.Where(c => SeeThrough(c)).SelectMany(Nodes).Select(B)).ToArray());
         }
-        Apart(s.Groups.Select(g => Nodes(g).Count() == 1 ? B(Nodes(g).Single()) : r.GroupBoxes[g.Id]).Concat(s.LooseNodes.Select(B)).ToArray());
+        Apart(s.Groups.Select(g => SeeThrough(g) ? B(Nodes(g).Single()) : r.GroupBoxes[g.Id]).Concat(s.LooseNodes.Select(B)).ToArray());
     }
     private static HierarchySnapshot RandomTree(int seed)
     {

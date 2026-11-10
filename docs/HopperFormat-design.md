@@ -210,7 +210,7 @@ Phase one formats one flat selection. Phase two adds groups at two levels. **Ins
 #### 5.9.1 Group tree and ownership
 
 - Membership comes from `GH_Group.ObjectIDs`. A group's **direct members** are its nodes, plus its child groups as single units; a child group's own members are not direct members.
-- A **label group** contains exactly one node, transitively. Example: `TitleBlockRange` wrapping one param. Label groups are **see-through**: their node counts as a direct member of the parent, and the label box follows it because Grasshopper derives group bounds from members. This keeps every phase-one golden layout unchanged when its params are labelled.
+- A **label group** contains exactly one node, transitively. Example: `TitleBlockRange` wrapping one param. Label groups are **see-through**: their node counts as a direct member of the parent, and the label box follows it because Grasshopper derives group bounds from members. This keeps every phase-one golden layout unchanged when its params are labelled. A label that also contains a non-node member (a scribble or markup, transitively) is not see-through: those notes give it a visible footprint the node alone does not have, so it lays out as a real child whose box, scribble text included, keeps clear of its siblings. That box keeps its node's role: a labelled param ranks like a param (output params still go to the last column), and columns right-align on the node's own right edge rather than the box's, so a wide note never pushes its column-mates sideways. The exception is a label with a member also owned by an unrelated group; that space is not the label's alone, so it stays see-through and follows its node.
 - **Ownership must be exclusive between multi-node groups.** A node in two multi-node groups that are not nested in each other has no single correct layout. FF on a selection refuses with a diagnostic naming the node; format all skips both roots and keeps them fixed. Overlap involving a label group is allowed, including a label around a node in a non-nested larger group: the label follows its node and never creates a second layout owner.
 - Nested layout problems do not refuse their root. Empty nested groups (including groups containing only empty groups) are ignored; a child whose contraction introduces a cycle is dissolved for layout as described below. Nodes with empty bounds are excluded and reported without skipping the group. Locks, real overlapping membership and malformed geometry still refuse inner formatting.
 - `[lock]` groups are never formatted and never moved. In format all they stay put as obstacles.
@@ -358,7 +358,7 @@ Resolved:
 - **Selection spanning groups:** FF formats each group's contents, then re-plans the groups by dataflow (5.9.3).
 - **Global gesture:** FF with nothing selected formats all groups (F then G was dropped: it clashed with HopperGroup's G).
 - **Format-all arrangement:** tidy in place with box-edge alignment; ungrouped objects never move (5.9.4).
-- **Label groups:** see-through.
+- **Label groups:** see-through, unless they also hold notes (then a real block).
 
 Open:
 - Should `GroupGapX`/`GroupGapY` become component inputs, or stay constants until someone asks?

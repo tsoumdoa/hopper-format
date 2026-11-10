@@ -30,6 +30,13 @@ namespace HopperFormat.Layout
         public double Width { get; set; }
         public double Height { get; set; }
         public bool Widget { get; set; }
+        // A group unit standing in for one labelled param: it ranks like that param
+        // (output params go to the last column) while reserving its whole box.
+        public bool ParamRole { get; set; }
+        // Distance from the box's left edge to the right edge columns align on.
+        // Zero means the box's own right edge. A labelled node aligns on its own
+        // footprint, so a wide note does not push its column-mates sideways.
+        public double AlignRight { get; set; }
         public Vec2[] Inputs { get; set; } = Array.Empty<Vec2>();
         public Vec2[] Outputs { get; set; } = Array.Empty<Vec2>();
     }

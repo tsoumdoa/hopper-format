@@ -6,7 +6,7 @@
     <TargetExt>.gha</TargetExt>
     <NoWarn>NU1701;NETSDK1086;CA1416</NoWarn>
     <Nullable>disable</Nullable>
-    <Version>0.1.0-beta.2</Version>
+    <Version>0.1.0-beta.3</Version>
     <Title>HopperFormat</Title>
     <Company>AECTooling</Company>
     <Description>Format selected Grasshopper components as a left-to-right dataflow</Description>
