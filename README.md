@@ -39,6 +39,16 @@ verified; a failed apply restores all original pivots and records no undo event.
 An already formatted selection reports `Already formatted` and creates no record.
 Formatting does not recompute component geometry; output updates are scheduled.
 
+## Wires to unselected objects
+
+Formatting keeps wires that leave the selection running left to right. The
+formatted result may slide sideways, and one column gap may open by up to 150
+units, so that it does not end up behind something that feeds it or ahead of
+something it feeds. A wire that already ran right to left is left alone: the
+selection never jumps to straighten it. Disconnected pieces of a selection each
+keep their own left position. Log reports `Backward wires: before -> after`, and
+the pill mentions them only when a run created new ones.
+
 ## Formatting groups
 
 Select one or more groups and tap **FF**. One selected group formats its contents
@@ -68,11 +78,13 @@ edges snap together, small gaps even to 50 units horizontally or 40 vertically,
 and larger gaps stay. Only neighbours in the same snapped row can push right.
 All other collisions push the whole row down with clearance, including growth
 into objects below it. Column snapping keeps vertical stacks left-aligned.
-Ungrouped objects never move.
+Groups also shift sideways so wires to other groups and to loose objects keep
+running left to right. A loose object wired to exactly one group moves along with
+that group; every other ungrouped object stays where it is.
 
 Groups whose inner formatting fails are reported in Log and still move as rigid
 boxes, with their contents untouched. Only locked groups, groups with real
-multi-node ownership conflicts, and ungrouped objects (including nodes, notes,
+multi-node ownership conflicts, and other ungrouped objects (including nodes, notes,
 markup and HopperFormat itself) are fixed obstacles. Nested contraction cycles
 dissolve instead of skipping their roots. Log includes skipped and dissolved counts.
 The component's
@@ -154,7 +166,7 @@ HopperFormat is published as a beta. In Rhino 8, run `PackageManager`, tick
 **Include pre-releases**, search for `hopperformat` and install. Or close Rhino and run:
 
 ```text
-yak install hopperformat 0.1.0-beta.3
+yak install hopperformat 0.1.0-beta.4
 ```
 
 ## Install locally
@@ -163,7 +175,7 @@ Close Rhino first. From the repository root in **Git Bash on Windows**, build,
 test, package, and install locally with:
 
 ```bash
-./scripts/release-yak.sh 0.1.0-beta.3 --allow-dirty --install
+./scripts/release-yak.sh 0.1.0-beta.4 --allow-dirty --install
 ```
 
 The script replaces an already installed copy of the same version so a rebuilt
@@ -176,7 +188,7 @@ To install the built package manually from PowerShell, run this command from
 the repository root, using the artifact folder as the source:
 
 ```powershell
-& "C:\Program Files\Rhino 8\System\Yak.exe" install --source "$PWD\artifacts\yak" hopperformat 0.1.0-beta.3
+& "C:\Program Files\Rhino 8\System\Yak.exe" install --source "$PWD\artifacts\yak" hopperformat 0.1.0-beta.4
 ```
 
 Restart Rhino and open Grasshopper after installation to load the new build.
