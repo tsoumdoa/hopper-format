@@ -182,7 +182,10 @@ namespace HopperFormat.Layout
                     double alignment = GroupLink(item.Node, target.Node) ? 0 : target.Node.Inputs[e.ToPort].Y -
                         item.Node.Outputs[e.FromPort].Y;
                     double observed = item.Node.CurrentTop.Y - target.Node.CurrentTop.Y;
-                    if (rounded && Math.Abs(observed - alignment) < 1) alignment = observed;
+                    // Window solves retain their fixed canvas frame, including
+                    // the packed shortcut. Recover this visible Y contact rather
+                    // than adding another independent rounding error.
+                    if (rounded && ColumnWindows.HasOutsideX(graph) && Math.Abs(observed - alignment) < 1) alignment = observed;
                     return blockOf[target].Top + offsets[target] +
                         alignment - offsets[item];
                 }).OrderBy(y => y).ToArray();

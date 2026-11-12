@@ -127,16 +127,19 @@ internal static class SessionTests
             Assert(f.Session.Status == "Already formatted" && f.Session.LastMoves == 0
                 && f.Document.UndoUtil.Records.Count == 1 && record.Before.Count <= 2, "menu path disagrees with FF/no-op");
         });
-        Check(form, "Session menu formats a selected label group and leaves other nodes untouched", f =>
+        Check(form, "Session menu respects a selected label group's return wire and leaves other nodes untouched", f =>
         {
             var group = new GH_Group { NickName = "Group only" };
             group.ObjectIDs.Add(f.First.InstanceGuid); f.Document.Objects.Add(group);
             f.Document.Selection.Clear(); f.Document.Selection.Add(group);
             f.Session.Run();
-            Assert(f.Session.Status.StartsWith("Formatted groups") && f.Session.LastMoves == 1
+            // First feeds the loose Second to its left. A one-node label group
+            // is already packed; formatting must not chase that return wire.
+            Assert(f.Session.Status == "Already formatted" && f.Session.LastMoves == 0
                 && !f.Session.Log(false).Any(line => line.Contains("Skipped"))
-                && f.Document.UndoUtil.Creates == 1 && f.First.Attributes != null && f.Second.Attributes.Pivot == f.Second.InitialPivot,
-                "label-only group was skipped or moved a loose node");
+                && f.Document.UndoUtil.Creates == 0 && f.First.Attributes != null
+                && f.First.Attributes.Pivot == f.First.InitialPivot && f.Second.Attributes.Pivot == f.Second.InitialPivot,
+                "label-only group was skipped or chased a deliberate return wire");
             f.Session.Run(); Assert(f.Session.LastMoves == 0, "label window moved on repeat");
         });
         Check(form, "Session FF captures a selected group and writes one Format groups undo record", f =>

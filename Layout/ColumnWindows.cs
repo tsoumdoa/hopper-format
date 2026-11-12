@@ -43,9 +43,12 @@ namespace HopperFormat.Layout
                 ? new[] { Build(graph, new[] { graph.Nodes }, anchorX, true) }
                 : islands.Select(island => Build(graph, Enumerable.Range(0, island.Max(n => ranks[n.Id]) + 1)
                     .Select(c => island.Where(n => ranks[n.Id] == c).ToArray()).ToArray(), anchorX, false)).ToArray();
-            // The legacy packed placement wins all four objectives in this case.
+            // Packed placement at the old anchor wins the first three objectives
+            // when it creates no backward wire. Keep its usual rounding phase;
+            // pre-existing backward wires must not cause stretch or movement.
             if (plans.All(g => g.Bounds.SelectMany((bs, c) => bs.Select(b => new { Bound = b, Column = c })).All(p => {
                 var b = p.Bound;
+                if (!b.Forward) return true;
                 double grip = LayoutSolver.Round(g.Left[p.Column] + g.Indent[b.Node.Id] + b.Node.PivotOffset.X) - b.Node.PivotOffset.X + b.Grip;
                 return b.Lower ? grip >= b.Outside : grip <= b.Outside;
             }))) return;
@@ -74,8 +77,8 @@ namespace HopperFormat.Layout
             double maximum = double.PositiveInfinity, below = double.NegativeInfinity;
             for (int i = 0; i < plans.Length; i++)
             {
-                var states = Solve(plans[i], values, anchorX, double.NegativeInfinity, true);
-                optima[i] = Best(states, true);
+                var states = Solve(plans[i], values, anchorX, double.NegativeInfinity, Preference.MaxEnvelope);
+                optima[i] = Best(states, Preference.MaxEnvelope);
                 var optimal = states.Where(s => s != null && Primary(s, optima[i]) == 0).ToArray();
                 maximum = Math.Min(maximum, optimal.Max(s => s.Envelope));
                 below = Math.Max(below, optimal.Where(s => s.Low).Select(s => s.Envelope).DefaultIfEmpty(double.NegativeInfinity).Max());
@@ -85,26 +88,68 @@ namespace HopperFormat.Layout
             bool abovePossible = true;
             for (int i = 0; i < plans.Length; i++)
             {
-                var best = Best(Solve(plans[i], values, anchorX, anchorX, false), false);
+                var best = Best(Solve(plans[i], values, anchorX, anchorX, Preference.MinEnvelope), Preference.MinEnvelope);
                 if (best == null || Primary(best, optima[i]) != 0) { abovePossible = false; break; }
                 above = Math.Min(above, best.Envelope);
             }
             if (!abovePossible) above = double.PositiveInfinity;
             double target = anchorX - below <= above - anchorX ? below : above;
             if (!Graph.Finite(target)) throw new InvalidOperationException("No column-window envelope candidate.");
-            var chosen = plans.Select(g => Best(Solve(g, values, anchorX, target, false), false)).ToArray();
+            var chosen = Choose(plans, values, optima, target);
+            // Equal movement on opposite sides must still use the fourth
+            // objective before stable coordinates choose a side.
+            if (below != above && anchorX - below == above - anchorX)
+            {
+                var other = Choose(plans, values, optima, above);
+                if (ComparePlans(other, chosen) < 0) { target = above; chosen = other; }
+            }
 
             // Prefer the usual packed phase when it has the same optimum and
             // emitted envelope. This retains the legacy rounding convention.
             var packedPaths = plans.Select(g => Enumerable.Repeat((long)Math.Round(target * Scale), g.Columns.Length).ToArray()).ToArray();
             if (plans.Select((g, i) => Primary(Cost(g, packedPaths[i]), optima[i]) == 0).All(ok => ok) &&
-                plans.Select((g, i) => Envelope(g, packedPaths[i])).Min() == target)
+                plans.Select((g, i) => Envelope(g, packedPaths[i])).Min() == target &&
+                plans.Select((g, i) => Cost(g, packedPaths[i]).Remaining).Sum() == chosen.Sum(s => s.Remaining))
                 for (int i = 0; i < plans.Length; i++) chosen[i] = Cost(plans[i], packedPaths[i]);
             graph.WindowTops = new Dictionary<Guid, double>();
             for (int i = 0; i < plans.Length; i++)
                 for (int c = 0; c < plans[i].Columns.Length; c++)
                     foreach (var n in plans[i].Columns[c])
                         graph.WindowTops.Add(n.Id, plans[i].Packed[c] + chosen[i].Path[c] / Scale + plans[i].Indent[n.Id]);
+        }
+
+        private static State[] Choose(Geometry[] plans, long[] values, State[] optima, double target)
+        {
+            // Movement is global: after fixing the nearest union envelope, an
+            // island may move farther right for a free reduction in return wires.
+            // Keep an exact-envelope alternative for each island so at least one
+            // attains the union's target, with the smallest remaining-wire cost.
+            var finals = plans.Select(g => Solve(g, values, target, target, Preference.Remaining)).ToArray();
+            var chosen = finals.Select(states => Best(states, Preference.Remaining)).ToArray();
+            if (chosen.Min(s => s.Envelope) != target)
+            {
+                State[] best = null;
+                for (int i = 0; i < plans.Length; i++)
+                {
+                    var atTarget = Best(finals[i].Where(s => s != null && s.Envelope == target &&
+                        Primary(s, optima[i]) == 0), Preference.Remaining);
+                    if (atTarget == null) continue;
+                    var candidate = (State[])chosen.Clone();
+                    candidate[i] = atTarget;
+                    if (best == null || ComparePlans(candidate, best) < 0) best = candidate;
+                }
+                if (best == null) throw new InvalidOperationException("No exact column-window envelope candidate.");
+                chosen = best;
+            }
+            return chosen;
+        }
+
+        private static int ComparePlans(State[] a, State[] b)
+        {
+            int c = a.Sum(s => s.Remaining).CompareTo(b.Sum(s => s.Remaining));
+            for (int i = 0; c == 0 && i < a.Length; i++)
+                for (int j = 0; c == 0 && j < a[i].Path.Length; j++) c = a[i].Path[j].CompareTo(b[i].Path[j]);
+            return c;
         }
 
         private static Geometry Build(Graph graph, Node[][] columns, double anchorX, bool unconnected)
@@ -160,7 +205,7 @@ namespace HopperFormat.Layout
         // Reverse dynamic programming. Each window is [x, x+150], so two monotone
         // queues find its best suffix in linear time. Low records whether any
         // emitted bound is at/below the old envelope, to find both movement sides.
-        private static State[] Solve(Geometry g, long[] values, double anchor, double floor, bool maximize)
+        private static State[] Solve(Geometry g, long[] values, double anchor, double floor, Preference preference)
         {
             var previous = new State[2, values.Length];
             for (int c = g.Columns.Length - 1; c >= 0; c--)
@@ -178,7 +223,7 @@ namespace HopperFormat.Layout
                         {
                             if (previous[flag, k] != null)
                             {
-                                while (queue.Count > 0 && Compare(previous[flag, k], previous[flag, queue.Last.Value], maximize, true) < 0) queue.RemoveLast();
+                                while (queue.Count > 0 && Compare(previous[flag, k], previous[flag, queue.Last.Value], preference, true) < 0) queue.RemoveLast();
                                 queue.AddLast(k);
                             }
                             while (queue.Count > 0 && values[queue.First.Value] > values[k] + Cap) queue.RemoveFirst();
@@ -195,7 +240,7 @@ namespace HopperFormat.Layout
                             if (!(b.Lower ? values[k] >= b.Tick : values[k] <= b.Tick))
                             { if (b.Forward) state.Created++; else state.Remaining++; }
                         int f = state.Low ? 1 : 0;
-                        if (next[f, k] == null || Compare(state, next[f, k], maximize, false) < 0) next[f, k] = state;
+                        if (next[f, k] == null || Compare(state, next[f, k], preference, false) < 0) next[f, k] = state;
                     }
                 }
                 previous = next;
@@ -216,27 +261,29 @@ namespace HopperFormat.Layout
                     { if (b.Forward) state.Created++; else state.Remaining++; }
             return state;
         }
-        private static State Best(IEnumerable<State> states, bool maximize)
+        private static State Best(IEnumerable<State> states, Preference preference)
         {
             State best = null;
             foreach (var s in states)
-                if (s != null && (best == null || Compare(s, best, maximize, false) < 0)) best = s;
+                if (s != null && (best == null || Compare(s, best, preference, false) < 0)) best = s;
             return best;
         }
         private static int Primary(State a, State b, bool transition = false)
         {
             int c = a.Created.CompareTo(b.Created);
-            if (c == 0) c = a.Remaining.CompareTo(b.Remaining);
             if (c == 0) c = (a.Stretch + (transition ? a.Path[0] : 0)).CompareTo(b.Stretch + (transition ? b.Path[0] : 0));
             return c;
         }
-        private static int Compare(State a, State b, bool maximize, bool transition)
+        private static int Compare(State a, State b, Preference preference, bool transition)
         {
             int c = Primary(a, b, transition);
-            if (c == 0) c = maximize ? b.Envelope.CompareTo(a.Envelope) : a.Envelope.CompareTo(b.Envelope);
+            if (c == 0 && preference != Preference.Remaining)
+                c = preference == Preference.MaxEnvelope ? b.Envelope.CompareTo(a.Envelope) : a.Envelope.CompareTo(b.Envelope);
+            if (c == 0) c = a.Remaining.CompareTo(b.Remaining);
             for (int i = 0; c == 0 && i < a.Path.Length; i++) c = a.Path[i].CompareTo(b.Path[i]);
             return c;
         }
+        private enum Preference { MaxEnvelope, MinEnvelope, Remaining }
         internal sealed class Bound
         {
             internal long Tick;

@@ -31,11 +31,10 @@ namespace HopperFormat.Layout
                 Math.Abs(n.CurrentTop.Y + n.PivotOffset.Y - LayoutSolver.Round(n.CurrentTop.Y + n.PivotOffset.Y)) > 1e-8)) return false;
             ColumnWindows.Prepare(graph, islands, ranks, anchor.X);
             bool windows = ColumnWindows.HasOutsideX(graph);
-            bool exactX = graph.WindowTops != null ||
-                graph.Snapshot.Inbound.Any(e => Graph.Finite(e.SourceGripX) &&
-                    graph.ById[e.Node].CurrentTop.X + graph.ById[e.Node].Inputs[e.Port].X < e.SourceGripX.Value) ||
-                graph.Snapshot.Outbound.Any(e => Graph.Finite(e.TargetGripX) &&
-                    graph.ById[e.Node].CurrentTop.X + graph.ById[e.Node].Outputs[e.Port].X > e.TargetGripX.Value);
+            // The packed shortcut preserves today's rounding family even when
+            // deliberate return wires remain backward. Only an optimized plan
+            // needs exact X to protect its absolute crossing-wire thresholds.
+            bool exactX = graph.WindowTops != null;
             var raw = new Dictionary<Guid, Vec2>();
             if (graph.Edges.Length == 0)
             {

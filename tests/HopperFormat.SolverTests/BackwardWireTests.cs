@@ -17,14 +17,85 @@ internal static partial class Program
 
     private static void BackwardWireTests()
     {
+        Check("Column windows: recognize a rounded free source whose level long wire is obstructed", () => {
+            var root = Component(1, "Root", 0, 0, 1, height: 20);
+            var source = Component(2, "Free source", 0, 49, 1, height: 123);
+            var middle = Component(3, "Obstruction", 120, 0, 1, height: 120);
+            var target = Component(4, "Target", 240, 100, 1, height: 20);
+            var orphan = Component(5, "Fractional anchor", 360, -.5, 1, height: 10);
+            var last = Component(6, "Last", 360, 25.5, 1, height: 20);
+            foreach (var n in new[] { root, source, middle, target }) n.PivotOffset = new Vec2(0, 0);
+            orphan.PivotOffset = new Vec2(0, .5);
+            last.PivotOffset = new Vec2(0, .5);
+            source.Kind = NodeKind.Param;
+            middle.Inputs[0] = new Vec2(0, 10); middle.Outputs[0] = new Vec2(90, 110);
+            var s = Make(new[] { root, source, middle, target, orphan, last }, Wire(root, middle), Wire(middle, target), Wire(source, target), Wire(target, last));
+            s.Inbound = new[] { new ExternalInbound { Node = source.Id, SourceGripX = -100 } };
+            Assert(Graph.TryCreate(s, out var graph, out var diagnostic), diagnostic);
+            Near(source.CurrentTop.Y - target.CurrentTop.Y, -51, "visible source alignment");
+            Near(target.Inputs[0].Y - source.Outputs[0].Y, -51.5, "raw grip alignment");
+            Assert(FixedPoint.TryMatch(graph, new Vec2(0, -.5), out var ranks), "rounded free-source contact not recognized");
+            Assert(ranks[source.Id] == 0 && ranks[target.Id] == 2, "long source link lost");
+            Assert(!FixedPoint.VisibleLanes(graph, graph.Nodes.ToList(), ranks).Any(), "obstructed wire acquired a lane");
+            var r = Solve(s); Assert(r.Moves.Count == 0, "rounded contact moved"); Guarantees(s, r);
+        });
+        Check("Column windows: deliberate far return wire preserves the output with outside X stripped", () => {
+            var a = Component(1, "A", 0, 0); var b = Component(2, "B", 50, 80);
+            var s = Make(new[] { a, b }, Wire(a, b));
+            s.Inbound = new[] { new ExternalInbound { Node = a.Id, SourceGripX = 3000 } };
+            var r = Solve(s);
+            Near(r.Tops[a.Id].X, 0, "far return wire moved the envelope");
+            Assert(BoundaryCounts(s, r).After == 1, "deliberate return wire was chased");
+            Guarantees(s, r);
+            s.Inbound[0].SourceGripX = null;
+            SameResult(Solve(s), r);
+        });
+        Check("Column windows: required forward-wire slide straightens a return wire at no extra cost", () => {
+            var a = Component(1, "A", 500, 0); var b = Component(2, "B", 0, 80);
+            var s = Make(new[] { a, b }, Wire(a, b));
+            s.Inbound = new[] { new ExternalInbound { Node = a.Id, SourceGripX = 300 } };
+            var forced = Solve(s);
+            s.Inbound = s.Inbound.Concat(new[] { new ExternalInbound { Node = b.Id, SourceGripX = 400 } }).ToArray();
+            var r = Solve(s); var counts = BoundaryCounts(s, r);
+            SameResult(forced, r);
+            Assert(counts.Before == 1 && counts.After == 0 && counts.Created == 0, "free straightening lost");
+            Guarantees(s, r);
+        });
+        Check("Column windows: a return wire cannot add stretch to a required slide", () => {
+            var a = Component(1, "A", 500, 0); var b = Component(2, "B", 0, 80);
+            var s = Make(new[] { a, b }, Wire(a, b));
+            s.Inbound = new[] { new ExternalInbound { Node = a.Id, SourceGripX = 300 } };
+            var forced = Solve(s);
+            s.Inbound = s.Inbound.Concat(new[] { new ExternalInbound { Node = b.Id, SourceGripX = 500 } }).ToArray();
+            var r = Solve(s); SameResult(forced, r);
+            Assert(BoundaryCounts(s, r).After == 1, "return wire added stretch"); Guarantees(s, r);
+        });
+        Check("Column windows: remaining return wires break equal-distance slide ties", () => {
+            var a = Component(1, "A", 500, 0); var b = Component(2, "B", 0, 80);
+            var s = Make(new[] { a, b }, Wire(a, b));
+            // Packed B is at shift+120. Keeping the source needs shift>=100;
+            // keeping B's consumer needs shift<=-100. Both cost one new wire.
+            s.Inbound = new[] { new ExternalInbound { Node = a.Id, SourceGripX = 100 },
+                new ExternalInbound { Node = b.Id, SourceGripX = 150 } };
+            s.Outbound = new[] { new ExternalOutbound { Node = b.Id, TargetGripX = 110 } };
+            var r = Solve(s);
+            Near(r.Tops[a.Id].X, 100, "remaining-wire movement tie-break");
+            var counts = BoundaryCounts(s, r);
+            Assert(counts.Created == 1 && counts.After == 1, "remaining-wire tie-break lost");
+            Guarantees(s, r);
+        });
         Check("Column windows: fixed-point recognition cannot translate across a fractional wire threshold", () => {
-            var n = Component(1, "Node", 0, 0);
-            var s = Make(new[] { n });
+            var n = Component(1, "Node", 1, 0);
+            var anchor = Component(2, "Anchor", 0, 100);
+            var s = Make(new[] { n, anchor });
             s.Inbound = new[] { new ExternalInbound { Node = n.Id, SourceGripX = .25 } };
             var r = Solve(s); Near(r.Tops[n.Id].X, 1, "fractional source threshold"); Guarantees(s, r);
-            s.Inbound = Array.Empty<ExternalInbound>();
-            s.Outbound = new[] { new ExternalOutbound { Node = n.Id, TargetGripX = n.Width - .25 } };
-            r = Solve(s); Near(r.Tops[n.Id].X, -1, "fractional consumer threshold"); Guarantees(s, r);
+            n.CurrentTop = new Vec2(0, 0);
+            anchor.CurrentTop = new Vec2(0, 100);
+            s = Make(new[] { anchor, n }, Wire(anchor, n));
+            s.Outbound = new[] { new ExternalOutbound { Node = n.Id, TargetGripX = n.Width + .25 } };
+            r = Solve(s); Near(r.Tops[n.Id].X, 0, "fractional consumer threshold");
+            Near(r.Tops[anchor.Id].X, -120, "consumer window slide"); Guarantees(s, r);
         });
         Check("Column windows: slide right of an outside source and left of an outside consumer", () => {
             var a = Component(1, "A", 500, 0); var b = Component(2, "B", 0, 80);
@@ -63,6 +134,16 @@ internal static partial class Program
             foreach (var e in s.Outbound) e.TargetGripX = 10000;
             SameResult(legacy, Solve(s));
         });
+        Check("Column windows: packed return-wire shortcut retains fractional legacy rounding", () => {
+            var s = RandomDag(140877); var legacy = Solve(s);
+            foreach (var e in s.Inbound) e.SourceGripX = 10000;
+            var r = Solve(s); SameResult(legacy, r); Guarantees(s, r);
+            Assert(BoundaryCounts(s, r).After == s.Inbound.Count, "deliberate return wire was chased");
+            Assert(Graph.TryCreate(Applied(s, r), out var graph, out var diagnostic), diagnostic);
+            Assert(FixedPoint.TryMatch(graph, new Vec2(r.Tops.Values.Min(t => t.X), r.Tops.Values.Min(t => t.Y)), out _),
+                "packed return-wire fixed point not recognized");
+            Assert(graph.WindowTops == null, "return wires bypassed the packed shortcut");
+        });
         Check("Column windows: disconnected islands share the envelope tie-break without sharing constraints", () => {
             var a = Component(1, "A", 500, 0); var b = Component(2, "B", 0, 80);
             var c = Component(3, "C", 0, 200); var d = Component(4, "D", 50, 280);
@@ -70,6 +151,32 @@ internal static partial class Program
             s.Inbound = new[] { new ExternalInbound { Node = a.Id, SourceGripX = 300 } };
             s.Outbound = new[] { new ExternalOutbound { Node = d.Id, TargetGripX = 200 } };
             var r = Solve(s); Assert(BoundaryCounts(s, r).Created == 0, "independent windows coupled"); Guarantees(s, r);
+        });
+        Check("Column windows: a held island permits free return-wire repair in another island", () => {
+            var a = Component(1, "A", 500, 0); var b = Component(2, "B", 0, 80);
+            var c = Component(3, "C", 0, 200); var d = Component(4, "D", 0, 280);
+            var s = Make(new[] { a, b, c, d }, Wire(a, b), Wire(c, d));
+            s.Inbound = new[] { new ExternalInbound { Node = a.Id, SourceGripX = 300 },
+                new ExternalInbound { Node = b.Id, SourceGripX = 450 } };
+            s.Outbound = new[] { new ExternalOutbound { Node = d.Id, TargetGripX = 210 } };
+            var r = Solve(s);
+            Near(r.Tops[a.Id].X, 330, "free island slide"); Near(r.Tops[c.Id].X, 0, "held envelope");
+            Near(r.Tops[b.Id].X - r.Tops[a.Id].X, 120, "free repair stretched a gap");
+            Assert(BoundaryCounts(s, r).After == 0, "free return-wire repair lost"); Guarantees(s, r);
+        });
+        Check("Column windows: minimizing return wires still attains the chosen global envelope", () => {
+            var a = Component(1, "A", 500, 0); var b = Component(2, "B", 0, 80);
+            var c = Component(3, "C", 500, 200); var d = Component(4, "D", 0, 280);
+            var s = Make(new[] { a, b, c, d }, Wire(a, b), Wire(c, d));
+            s.Inbound = new[] { new ExternalInbound { Node = a.Id, SourceGripX = 100 },
+                new ExternalInbound { Node = c.Id, SourceGripX = 100 },
+                new ExternalInbound { Node = b.Id, SourceGripX = 300 },
+                new ExternalInbound { Node = d.Id, SourceGripX = 300 } };
+            var r = Solve(s);
+            Near(r.Tops.Values.Min(t => t.X), 100, "remaining wires moved the envelope");
+            Near(r.Tops[a.Id].X, 100, "stable envelope keeper"); Near(r.Tops[c.Id].X, 180, "free island repair");
+            var counts = BoundaryCounts(s, r);
+            Assert(counts.Created == 0 && counts.After == 1, "wrong return-wire optimum"); Guarantees(s, r);
         });
         Check("Column windows: per-node grip offsets, equality thresholds and unconnected nodes", () => {
             var a = Component(1, "A", 250.25, 0, width: 120.25);
