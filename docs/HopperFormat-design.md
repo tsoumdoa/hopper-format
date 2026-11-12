@@ -92,8 +92,8 @@ Edge
   from, fromPort, to, toPort                 one edge per wire, never merged
 
 External
-  inbound[]   (node, port, sourceGripY)      wires arriving from outside the target
-  outbound[]  (node, port, targetGripY)      wires leaving the target
+  inbound[]   (node, port, sourceGripY, sourceGripX?, sourceObjectId)
+  outbound[]  (node, port, targetGripY, targetGripX?, targetObjectId)
 
 Anchor   top-left of the content envelope: the union of member bounds before formatting
 Gaps     gapX, gapY, stackGap
@@ -102,13 +102,15 @@ Options  keepOrder, loose
 
 Widget means a parameter with no sources, no owner, and compact attributes: slider, toggle, button, value list, colour swatch, panel used as an input. A panel that has sources is a sink, not a widget. Relays stay as nodes. Clusters are opaque nodes with their outer grips. Grip coordinates are measured, not derived from bounds, because custom attributes do not put grips where right-aligned bounds would.
 
+External grip X is absolute canvas X, measured from the same attributes as Y. It is optional (null means unknown; NaN is also accepted as unknown); infinities are invalid. The object id identifies the outside source or recipient's owning top-level document object, rather than its component port. Existing snapshots that omit X retain their previous layout. Synthetic boundary records for moving siblings retain only Y; real outside X is usable only in a fixed frame (5.4).
+
 ### 5.2 Step 0: collect and validate
 
 1. Members are the target's direct objects. A nested group inside the target is one `RigidGroup` node sized by its current bounds. Its members are not nodes. It is moved as one body.
 2. **Ownership check.** If any object in the target also belongs to a group outside the target's tree, formatting stops with a diagnostic naming the object. Overlapping membership has no single correct layout.
 3. On the UI thread, create missing attributes and force a layout pass on every member so bounds and grips are valid. Objects whose bounds are still empty are reported and excluded. Nothing else is skipped silently.
-4. For every input parameter of every member, walk `Sources`. Source owned by another member: internal edge. Otherwise an external inbound record with the source grip's y.
-5. For every output parameter, walk `Recipients`. Recipient outside: external outbound record with the target grip's y.
+4. For every input parameter of every member, walk `Sources`. Source owned by another member: internal edge. Otherwise an external inbound record with the source grip's X, Y and owning object id.
+5. For every output parameter, walk `Recipients`. Recipient outside: external outbound record with the target grip's X, Y and owning object id.
 6. Hidden wires are still edges. Wire display state never changes topology.
 
 ### 5.3 Step 1: cycle check
@@ -137,6 +139,23 @@ rank(v) = min rank(s) - 1         over internal successors s
 This is what puts a slider beside the component it feeds instead of in column 0 with a long wire. Source-free widget params (including internalised data, toggles, value lists and buttons) still take this pull. `Options.ReturnConstraint = false` (`loose`) disables the input-param exemption and both the output-param and outbound-wire terminal pins together.
 
 **Orphans.** A node with no edges keeps its relative position: it takes the rank of the ranked node whose current x is nearest to its own. Disconnected islands are ranked independently and stacked below the main graph in rank order.
+
+#### 5.4.1 Boundary-aware return pin: blocked by the current orphan rule
+
+Outside X is currently captured and measured, but does not change ranking. The proposed guard would release a terminal's return pin when the pinned solve creates a backward outbound wire, a trial without that pin fixes it, and the trial keeps other currently-forward outbound wires forward. Its released set would start empty on every format, grow deterministically, and be threaded through ranking and fixed-point recognition. Its intended scope is flat selections, the outer Selection level and a sole selected root's own level. Child-group and format-all solves have moving outside frames and must not use outside X for this purpose; their synthetic sibling hints omit X, and format-all inner snapshots strip X without mutating the capture.
+
+That exact guard conflicts with idempotence under the current orphan rule. A reproducible fixture in `tests/HopperFormat.SolverTests/BackwardWireTests.cs` has the chain `A -> B -> C -> D -> Z`, plus `A -> Early`, `Feeder -> Early` and an unconnected Orphan. All nodes are components, height 44, with output grip X equal to width, pivot offset (12, 7), and the default gaps. Their initial `(left, top, width)` values are A=(100,0,250), B=(200,60,80), C=(300,120,80), D=(400,180,80), Z=(500,240,80), Feeder=(0,300,40), Early=(100,360,80), Orphan=(0,420,200). Early's only outside consumer has input X=750; there are no other outbound wires.
+
+| Layout | Early rank | Orphan rank | Early output grip X |
+| --- | --- | --- | --- |
+| Input | — | — | 180 |
+| Normal pinned solve | 4 | 3 | 810 |
+| Trial releasing Early's pin | 1 | 0 | 360 |
+| Normal pinned solve from that trial's applied output | 4 | 0 | 690 |
+
+Both release conditions hold on the first run: 180 <= 750, 810 > 750 and 360 <= 750, with no other outbound wire to harm. After applying the release, the next run's empty released set produces 690 <= 750. Condition 1 is now false, so the guard cannot release Early again; repinning it moves the layout. Threading the released set through fixed-point matching cannot resolve this, because that second run never adds Early to the set. The fixture uses loose mode to express the trial: Early is the only effective terminal pin, Z is already at maximum, and no param exemptions apply.
+
+The guard is therefore deferred, preserving existing ranking and zero-move second formats. Completing it requires revising either the eligibility condition (to recognize and retain prior released fixed points) or the orphan-ranking policy so the counterfactual pinned layout is stable across the first format. Neither change is implemented here. The tests retain the exact counterexample and verify that outside X alone leaves existing solver output unchanged.
 
 ### 5.5 Step 3: column geometry
 
@@ -280,6 +299,8 @@ All measured on the applied, remeasured layout, not on the solver's internal num
 - **Non-members untouched**: the move list contains only members.
 
 Crossings are a reported metric, logged before and after, not a guarantee. The before and after layouts have different columns and the counts are not strictly comparable.
+
+**Backward wires** are also a reported metric, not a guarantee: output grip X strictly greater than input grip X. The host counts every physical wire touching an object in the final move list, including internal wires and wires between different format-all roots, once per wire. It applies both endpoints' final composed horizontal displacements; objects absent from the map stay fixed. Unknown grip X is ignored. Log always includes `Backward wires: <before> -> <after>`, followed by ` (<created> new)` when a forward wire became backward. Status and the feedback pill append ` · <created> new backward wire(s)` only when created is positive. With zero created their existing text is unchanged. A no-op has no touched wires, reports `Backward wires: 0 -> 0`, and creates no undo record. First-tap hints that preserve previous outputs still preserve them.
 
 ### 5.11 Worked example
 
