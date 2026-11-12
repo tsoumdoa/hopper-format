@@ -30,11 +30,9 @@ namespace HopperFormat.Layout
             if (graph.Nodes.Any(n => Math.Abs(n.CurrentTop.X + n.PivotOffset.X - LayoutSolver.Round(n.CurrentTop.X + n.PivotOffset.X)) > 1e-8 ||
                 Math.Abs(n.CurrentTop.Y + n.PivotOffset.Y - LayoutSolver.Round(n.CurrentTop.Y + n.PivotOffset.Y)) > 1e-8)) return false;
             ColumnWindows.Prepare(graph, islands, ranks, anchor.X);
-            bool windows = ColumnWindows.HasOutsideX(graph);
             // The packed shortcut preserves today's rounding family even when
             // deliberate return wires remain backward. Only an optimized plan
             // needs exact X to protect its absolute crossing-wire thresholds.
-            bool exactX = graph.WindowTops != null;
             var raw = new Dictionary<Guid, Vec2>();
             if (graph.Edges.Length == 0)
             {
@@ -60,32 +58,41 @@ namespace HopperFormat.Layout
                     if (previousBottom.HasValue &&
                         Math.Abs(currentMin - previousBottom.Value - Placement.IslandGap(graph, previous, island)) < 1)
                         y = currentMin;
-                    var placed = Reconstruct(graph, island, ranks, anchor.X);
+                    double islandX = ColumnWindows.OldLeft(island);
+                    bool islandWindows = ColumnWindows.HasOutsideX(graph, island);
+                    var placed = Reconstruct(graph, island, ranks, islandX);
                     if (placed == null) return false;
                     double minX = island.Min(n => placed[n.Id].X), minY = island.Min(n => placed[n.Id].Y);
                     foreach (var node in island)
-                        raw[node.Id] = new Vec2(placed[node.Id].X + (windows ? 0 : anchor.X - minX), placed[node.Id].Y + y - minY);
+                        raw[node.Id] = new Vec2(placed[node.Id].X + (islandWindows ? 0 : islandX - minX), placed[node.Id].Y + y - minY);
                     y = island.Max(n => raw[n.Id].Y + n.Height) + Placement.IslandGap(graph, island, islands.SkipWhile(i => i != island).Skip(1).FirstOrDefault() ?? new List<Node>());
                     previous = island;
                     previousBottom = island.Max(n => n.CurrentTop.Y + n.Height);
                 }
             }
-            // All pivots must be the rounding of one common translation, not merely
-            // individually within a unit of the desired layout. Half-open intervals
-            // implement the same positive-infinity midpoint rule as Round.
-            double lowX = -0.5, highX = 0.5, lowY = -0.5, highY = 0.5;
+            // Require a common horizontal rounding translation within each island
+            // and one common Y translation across the selection. Half-open intervals
+            // implement Round's positive-infinity midpoint rule; individual <1 px
+            // errors alone are insufficient. The unconnected case is one island.
+            var islandOf = islands.SelectMany((island, i) => island.Select(n => new { n.Id, Island = i }))
+                .ToDictionary(p => p.Id, p => p.Island);
+            var lowX = islands.Select(_ => -0.5).ToArray();
+            var highX = islands.Select(_ => 0.5).ToArray();
+            double lowY = -0.5, highY = 0.5;
             foreach (var node in graph.Nodes)
             {
                 var expected = raw[node.Id];
                 // Outside X fixes the canvas frame: an inferred horizontal
                 // rounding translation could cross a wire's exact threshold.
-                if (exactX && LayoutSolver.Round(expected.X + node.PivotOffset.X) !=
+                if (graph.WindowTops != null && graph.WindowTops.ContainsKey(node.Id) &&
+                    LayoutSolver.Round(expected.X + node.PivotOffset.X) !=
                     LayoutSolver.Round(node.CurrentTop.X + node.PivotOffset.X)) return false;
                 double dx = node.CurrentTop.X - expected.X, dy = node.CurrentTop.Y - expected.Y;
-                lowX = Math.Max(lowX, dx - 0.5); highX = Math.Min(highX, dx + 0.5);
+                int i = islandOf[node.Id];
+                lowX[i] = Math.Max(lowX[i], dx - 0.5); highX[i] = Math.Min(highX[i], dx + 0.5);
                 lowY = Math.Max(lowY, dy - 0.5); highY = Math.Min(highY, dy + 0.5);
             }
-            return lowX < highX - 1e-8 && lowY < highY - 1e-8;
+            return lowX.Select((low, i) => low < highX[i] - 1e-8).All(ok => ok) && lowY < highY - 1e-8;
         }
 
         internal static IEnumerable<Edge> VisibleLanes(Graph graph, List<Node> members, Dictionary<Guid, int> ranks)

@@ -48,6 +48,24 @@ internal static class HierarchyTests
 
     internal static int Run()
     {
+        Check("Hierarchy moving child levels retain distinct island left edges", () => {
+            var a = N(1, 0, 0); var b = N(2, 150, 80);
+            var c = N(3, 400, 0); var d = N(4, 600, 80);
+            var e = N(5, 900, 200); var f = N(6, 1000, 280);
+            var child = G(101, new[] { c, d, e, f });
+            var s = new HierarchySnapshot { Groups = new[] { G(100, new[] { a, b }, child) },
+                Edges = new[] { E(a, b), E(b, c), E(c, d), E(e, f) },
+                Outbound = new[] { new ExternalOutbound { Node = f.Id, TargetGripX = 0 } } };
+            var r = Solve(s);
+            Near(r.Tops[e.Id].X - r.Tops[c.Id].X, 500, "moving child island offsets");
+            s.Outbound[0].TargetGripX = null;
+            var withoutX = Solve(s);
+            foreach (var n in new[] { c, d, e, f })
+                Near(r.Tops[n.Id].X - r.Tops[c.Id].X, withoutX.Tops[n.Id].X - withoutX.Tops[c.Id].X,
+                    "outside X entered moving child level");
+            s.Outbound[0].TargetGripX = 0;
+            Stable(s, r); Geometry(s, r);
+        });
         Check("Outside X guides the sole root and stays absent at nested child and moving sibling levels", () => {
             var chain = Enumerable.Range(1, 4).Select(i => N(i, (i - 1) * 100, i * 60)).ToArray();
             var early = N(5, 100, 0);

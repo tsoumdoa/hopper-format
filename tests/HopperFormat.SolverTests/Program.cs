@@ -61,7 +61,8 @@ internal static partial class Program
     {
         return new Snapshot { Nodes = snapshot.Nodes.Select(n => new Node { Id = n.Id, Label = n.Label,
             CurrentTop = result.Tops[n.Id], PivotOffset = n.PivotOffset, Width = n.Width, Height = n.Height,
-            Kind = n.Kind, Widget = n.Widget, Inputs = n.Inputs, Outputs = n.Outputs }).ToArray(), Edges = snapshot.Edges,
+            Kind = n.Kind, Widget = n.Widget, ParamRole = n.ParamRole, AlignRight = n.AlignRight,
+            Inputs = n.Inputs, Outputs = n.Outputs }).ToArray(), Edges = snapshot.Edges,
             Inbound = snapshot.Inbound, Outbound = snapshot.Outbound, Options = snapshot.Options };
     }
 
@@ -397,7 +398,7 @@ internal static partial class Program
             Assert(Solve(Applied(snapshot, result)).Ranks[panel.Id] == 2, "wide orphan drifted to another column");
             Guarantees(snapshot, result);
         });
-        Check("Two islands: largest first, independent return ranks and left alignment", () => {
+        Check("Two islands: largest first, independent return ranks and own left edges", () => {
             var a = Component(1, "Main A", 200, 500); var b = Component(2, "Main B", 450, 700);
             var c = Component(3, "Main C", 700, 600); var x = Component(4, "Small X", -50, -100);
             var y = Component(5, "Small Y", 10, -50);
@@ -407,7 +408,7 @@ internal static partial class Program
             Assert(result.Ranks[y.Id] == 1, "small island inherited main max rank");
             double mainBottom = new[] { a, b, c }.Max(n => result.Tops[n.Id].Y + n.Height);
             Near(new[] { x, y }.Min(n => result.Tops[n.Id].Y) - mainBottom, 32, "island gap");
-            Near(result.Tops[a.Id].X, -50, "main left"); Near(result.Tops[x.Id].X, -50, "small left");
+            Near(result.Tops[a.Id].X, 200, "main left"); Near(result.Tops[x.Id].X, -50, "small left");
             Guarantees(snapshot, result);
         });
         Check("Main island ties and remaining islands follow original top order", () => {

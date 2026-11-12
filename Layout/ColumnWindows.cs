@@ -4,9 +4,8 @@ using System.Linq;
 
 namespace HopperFormat.Layout
 {
-    // One horizontal plan for the entire solve, shared by compaction and
-    // reconstruction. Independent islands share the envelope movement objective,
-    // but do not constrain each other's column windows.
+    // Independent horizontal plans shared by compaction and reconstruction.
+    // Every island measures movement from its own current emitted left edge.
     internal static class ColumnWindows
     {
         internal const double MaxStretch = 150;
@@ -16,6 +15,17 @@ namespace HopperFormat.Layout
         internal static bool HasOutsideX(Graph graph) =>
             graph.Snapshot.Inbound.Any(e => Graph.Finite(e.SourceGripX)) ||
             graph.Snapshot.Outbound.Any(e => Graph.Finite(e.TargetGripX));
+
+        internal static bool HasOutsideX(Graph graph, IEnumerable<Node> island)
+        {
+            var ids = new HashSet<Guid>(island.Select(n => n.Id));
+            return graph.Snapshot.Inbound.Any(e => ids.Contains(e.Node) && Graph.Finite(e.SourceGripX)) ||
+                graph.Snapshot.Outbound.Any(e => ids.Contains(e.Node) && Graph.Finite(e.TargetGripX));
+        }
+
+        // Only emitted node tops define the old edge. Do not add widths,
+        // alignment edges, group padding or raw (unrounded) column positions.
+        internal static double OldLeft(IEnumerable<Node> island) => island.Min(n => n.CurrentTop.X);
 
         internal sealed class Geometry
         {
@@ -30,8 +40,8 @@ namespace HopperFormat.Layout
             var g = Build(graph, columns, anchorX, unconnected);
             if (graph.WindowTops != null)
                 for (int c = 0; c < columns.Length; c++)
-                    if (columns[c].Length > 0)
-                        g.Left[c] = graph.WindowTops[columns[c][0].Id] - g.Indent[columns[c][0].Id];
+                    if (columns[c].Length > 0 && graph.WindowTops.TryGetValue(columns[c][0].Id, out double top))
+                        g.Left[c] = top - g.Indent[columns[c][0].Id];
             return g;
         }
 
@@ -39,117 +49,70 @@ namespace HopperFormat.Layout
         {
             graph.WindowTops = null;
             if (!HasOutsideX(graph) || graph.Nodes.Length == 0) return;
-            var plans = graph.Edges.Length == 0
-                ? new[] { Build(graph, new[] { graph.Nodes }, anchorX, true) }
-                : islands.Select(island => Build(graph, Enumerable.Range(0, island.Max(n => ranks[n.Id]) + 1)
-                    .Select(c => island.Where(n => ranks[n.Id] == c).ToArray()).ToArray(), anchorX, false)).ToArray();
-            // Packed placement at the old anchor wins the first three objectives
-            // when it creates no backward wire. Keep its usual rounding phase;
-            // pre-existing backward wires must not cause stretch or movement.
-            if (plans.All(g => g.Bounds.SelectMany((bs, c) => bs.Select(b => new { Bound = b, Column = c })).All(p => {
+            if (graph.Edges.Length == 0)
+                PrepareIsland(graph, Build(graph, new[] { graph.Nodes }, anchorX, true), anchorX);
+            else
+                foreach (var island in islands)
+                {
+                    double left = OldLeft(island);
+                    var columns = Enumerable.Range(0, island.Max(n => ranks[n.Id]) + 1)
+                        .Select(c => island.Where(n => ranks[n.Id] == c).ToArray()).ToArray();
+                    PrepareIsland(graph, Build(graph, columns, left, false), left);
+                }
+        }
+
+        private static void PrepareIsland(Graph graph, Geometry g, double anchorX)
+        {
+            // Return wires cannot justify movement or stretch. Preserve the usual
+            // packed rounding family whenever it keeps all forward wires forward.
+            if (g.Bounds.SelectMany((bs, c) => bs.Select(b => new { Bound = b, Column = c })).All(p => {
                 var b = p.Bound;
                 if (!b.Forward) return true;
                 double grip = LayoutSolver.Round(g.Left[p.Column] + g.Indent[b.Node.Id] + b.Node.PivotOffset.X) - b.Node.PivotOffset.X + b.Grip;
                 return b.Lower ? grip >= b.Outside : grip <= b.Outside;
-            }))) return;
+            })) return;
 
             var seeds = new SortedSet<long> { (long)Math.Floor(anchorX * Scale), (long)Math.Ceiling(anchorX * Scale) };
-            int count = plans.Max(g => g.Columns.Length);
-            foreach (var b in plans.SelectMany(g => g.Bounds.SelectMany(bs => bs)))
+            int count = g.Columns.Length;
+            foreach (var b in g.Bounds.SelectMany(bs => bs))
                 for (int k = -count - 1; k <= count + 1; k++) seeds.Add(b.Tick + k * Cap);
-            // Vertices are boundary events joined by tight 0/150 constraints.
-            // Envelope movement changes at rounded pivot events; include these
-            // in each vertex's unit cell, including the old envelope's cell.
+            // Include emitted pivot events as well as tight bound/gap events.
             var candidates = new SortedSet<long>(seeds);
-            foreach (var g in plans)
-                for (int c = 0; c < g.Columns.Length; c++)
-                    foreach (var n in g.Columns[c])
+            for (int c = 0; c < g.Columns.Length; c++)
+                foreach (var n in g.Columns[c])
+                {
+                    double offset = g.Packed[c] + g.Indent[n.Id] + n.PivotOffset.X;
+                    foreach (long seed in seeds)
                     {
-                        double offset = g.Packed[c] + g.Indent[n.Id] + n.PivotOffset.X;
-                        foreach (long seed in seeds)
-                        {
-                            double pivot = Math.Floor(seed / Scale + offset);
-                            for (int d = -1; d <= 1; d++) candidates.Add((long)Math.Ceiling((pivot + d - .5 - offset) * Scale));
-                        }
+                        double pivot = Math.Floor(seed / Scale + offset);
+                        for (int d = -1; d <= 1; d++) candidates.Add((long)Math.Ceiling((pivot + d - .5 - offset) * Scale));
                     }
+                }
             var values = candidates.ToArray();
-            var optima = new State[plans.Length];
-            double maximum = double.PositiveInfinity, below = double.NegativeInfinity;
-            for (int i = 0; i < plans.Length; i++)
-            {
-                var states = Solve(plans[i], values, anchorX, double.NegativeInfinity, Preference.MaxEnvelope);
-                optima[i] = Best(states, Preference.MaxEnvelope);
-                var optimal = states.Where(s => s != null && Primary(s, optima[i]) == 0).ToArray();
-                maximum = Math.Min(maximum, optimal.Max(s => s.Envelope));
-                below = Math.Max(below, optimal.Where(s => s.Low).Select(s => s.Envelope).DefaultIfEmpty(double.NegativeInfinity).Max());
-            }
-            below = Math.Min(below, maximum);
-            double above = double.PositiveInfinity;
-            bool abovePossible = true;
-            for (int i = 0; i < plans.Length; i++)
-            {
-                var best = Best(Solve(plans[i], values, anchorX, anchorX, Preference.MinEnvelope), Preference.MinEnvelope);
-                if (best == null || Primary(best, optima[i]) != 0) { abovePossible = false; break; }
-                above = Math.Min(above, best.Envelope);
-            }
-            if (!abovePossible) above = double.PositiveInfinity;
+            var states = Solve(g, values, anchorX, double.NegativeInfinity, Preference.MaxEnvelope);
+            var optimum = Best(states, Preference.MaxEnvelope);
+            double below = states.Where(s => s != null && s.Low && Primary(s, optimum) == 0)
+                .Select(s => s.Envelope).DefaultIfEmpty(double.NegativeInfinity).Max();
+            var upper = Best(Solve(g, values, anchorX, anchorX, Preference.MinEnvelope), Preference.MinEnvelope);
+            double above = upper != null && Primary(upper, optimum) == 0 ? upper.Envelope : double.PositiveInfinity;
             double target = anchorX - below <= above - anchorX ? below : above;
             if (!Graph.Finite(target)) throw new InvalidOperationException("No column-window envelope candidate.");
-            var chosen = Choose(plans, values, optima, target);
-            // Equal movement on opposite sides must still use the fourth
-            // objective before stable coordinates choose a side.
+            State At(double edge) => Best(Solve(g, values, edge, edge, Preference.Remaining)
+                .Where(s => s != null && s.Envelope == edge && Primary(s, optimum) == 0), Preference.Remaining);
+            var chosen = At(target);
             if (below != above && anchorX - below == above - anchorX)
             {
-                var other = Choose(plans, values, optima, above);
-                if (ComparePlans(other, chosen) < 0) { target = above; chosen = other; }
+                var other = At(above);
+                if (Compare(other, chosen, Preference.Remaining, false) < 0) { target = above; chosen = other; }
             }
-
-            // Prefer the usual packed phase when it has the same optimum and
-            // emitted envelope. This retains the legacy rounding convention.
-            var packedPaths = plans.Select(g => Enumerable.Repeat((long)Math.Round(target * Scale), g.Columns.Length).ToArray()).ToArray();
-            if (plans.Select((g, i) => Primary(Cost(g, packedPaths[i]), optima[i]) == 0).All(ok => ok) &&
-                plans.Select((g, i) => Envelope(g, packedPaths[i])).Min() == target &&
-                plans.Select((g, i) => Cost(g, packedPaths[i]).Remaining).Sum() == chosen.Sum(s => s.Remaining))
-                for (int i = 0; i < plans.Length; i++) chosen[i] = Cost(plans[i], packedPaths[i]);
-            graph.WindowTops = new Dictionary<Guid, double>();
-            for (int i = 0; i < plans.Length; i++)
-                for (int c = 0; c < plans[i].Columns.Length; c++)
-                    foreach (var n in plans[i].Columns[c])
-                        graph.WindowTops.Add(n.Id, plans[i].Packed[c] + chosen[i].Path[c] / Scale + plans[i].Indent[n.Id]);
-        }
-
-        private static State[] Choose(Geometry[] plans, long[] values, State[] optima, double target)
-        {
-            // Movement is global: after fixing the nearest union envelope, an
-            // island may move farther right for a free reduction in return wires.
-            // Keep an exact-envelope alternative for each island so at least one
-            // attains the union's target, with the smallest remaining-wire cost.
-            var finals = plans.Select(g => Solve(g, values, target, target, Preference.Remaining)).ToArray();
-            var chosen = finals.Select(states => Best(states, Preference.Remaining)).ToArray();
-            if (chosen.Min(s => s.Envelope) != target)
-            {
-                State[] best = null;
-                for (int i = 0; i < plans.Length; i++)
-                {
-                    var atTarget = Best(finals[i].Where(s => s != null && s.Envelope == target &&
-                        Primary(s, optima[i]) == 0), Preference.Remaining);
-                    if (atTarget == null) continue;
-                    var candidate = (State[])chosen.Clone();
-                    candidate[i] = atTarget;
-                    if (best == null || ComparePlans(candidate, best) < 0) best = candidate;
-                }
-                if (best == null) throw new InvalidOperationException("No exact column-window envelope candidate.");
-                chosen = best;
-            }
-            return chosen;
-        }
-
-        private static int ComparePlans(State[] a, State[] b)
-        {
-            int c = a.Sum(s => s.Remaining).CompareTo(b.Sum(s => s.Remaining));
-            for (int i = 0; c == 0 && i < a.Length; i++)
-                for (int j = 0; c == 0 && j < a[i].Path.Length; j++) c = a[i].Path[j].CompareTo(b[i].Path[j]);
-            return c;
+            // Keep the legacy packed phase when all four objectives agree.
+            var packed = Cost(g, Enumerable.Repeat((long)Math.Round(target * Scale), count).ToArray());
+            if (Primary(packed, optimum) == 0 && packed.Envelope == target && packed.Remaining == chosen.Remaining)
+                chosen = packed;
+            if (graph.WindowTops == null) graph.WindowTops = new Dictionary<Guid, double>();
+            for (int c = 0; c < count; c++)
+                foreach (var n in g.Columns[c])
+                    graph.WindowTops.Add(n.Id, g.Packed[c] + chosen.Path[c] / Scale + g.Indent[n.Id]);
         }
 
         private static Geometry Build(Graph graph, Node[][] columns, double anchorX, bool unconnected)

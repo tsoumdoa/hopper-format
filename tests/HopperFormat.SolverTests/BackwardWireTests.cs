@@ -15,30 +15,66 @@ internal static partial class Program
         return BackwardWires.Count(wires, nodes.Values.ToDictionary(n => n.Id, n => r.Tops[n.Id].X - n.CurrentTop.X));
     }
 
-    // Exercise the proposed independent movement rule with the unchanged
-    // single-island optimizer, retaining the selection's shared anchor.
-    private static Result IndependentIslandWindows(Snapshot s)
+    private static void Recognized(Snapshot s, Result r)
     {
-        Assert(Graph.TryCreate(s, out var graph, out var diagnostic), diagnostic);
-        var islands = Ranking.Assign(graph, out var ranks);
-        double anchor = graph.Nodes.Min(n => n.CurrentTop.X);
-        var tops = new Dictionary<Guid, Vec2>();
+        var applied = Applied(s, r);
+        Assert(Graph.TryCreate(applied, out var graph, out var diagnostic), diagnostic);
+        Assert(FixedPoint.TryMatch(graph, new Vec2(applied.Nodes.Min(n => n.CurrentTop.X),
+            applied.Nodes.Min(n => n.CurrentTop.Y)), out var ranks, out var islands, out _),
+            "emitted layout was not recognized");
+        if (s.Edges.Count == 0) return;
         foreach (var island in islands)
         {
-            ColumnWindows.Prepare(graph, new List<List<Node>> { island }, ranks, anchor);
             var columns = Enumerable.Range(0, island.Max(n => ranks[n.Id]) + 1)
                 .Select(c => island.Where(n => ranks[n.Id] == c).ToArray()).ToArray();
-            var geometry = ColumnWindows.Place(graph, columns, anchor);
-            for (int c = 0; c < columns.Length; c++)
-                foreach (var n in columns[c])
-                    tops[n.Id] = new Vec2(LayoutSolver.Round(geometry.Left[c] + geometry.Indent[n.Id] + n.PivotOffset.X) -
-                        n.PivotOffset.X, n.CurrentTop.Y);
+            var geometry = ColumnWindows.Place(graph, columns, ColumnWindows.OldLeft(island));
+            for (int c = 1; c < columns.Length; c++)
+            {
+                double stretch = geometry.Left[c] - geometry.Left[c - 1] - geometry.Packed[c] + geometry.Packed[c - 1];
+                Assert(stretch >= -1e-8 && stretch <= 150 + 1e-8, "gap stretch " + stretch);
+            }
         }
-        return new Result { Tops = tops };
+        Assert(r.Moves.All(m => m.Pivot.X == Math.Floor(m.Pivot.X) && m.Pivot.Y == Math.Floor(m.Pivot.Y)),
+            "fractional pivot");
     }
 
     private static void BackwardWireTests()
     {
+        Check("Per-island movement: distinct left edges survive without outside X", () => {
+            var a = Component(1, "A", 200, 500); var b = Component(2, "B", 450, 700);
+            var c = Component(3, "C", -50, -100); var d = Component(4, "D", 10, -50);
+            var s = Make(new[] { a, b, c, d }, Wire(a, b), Wire(c, d));
+            var r = Solve(s);
+            Near(r.Tops[a.Id].X, 200, "first island old left"); Near(r.Tops[c.Id].X, -50, "second island old left");
+            Guarantees(s, r); Recognized(s, r);
+        });
+        Check("Per-island movement: mixed outside X leaves the other island at its distinct left edge", () => {
+            var a = Component(1, "A", 500, 0); var b = Component(2, "B", 200, 80);
+            var c = Component(3, "C", -50, 200); var d = Component(4, "D", 10, 280);
+            var s = Make(new[] { a, b, c, d }, Wire(a, b), Wire(c, d));
+            var baseline = Solve(s);
+            s.Inbound = new[] { new ExternalInbound { Node = a.Id, SourceGripX = 400 } };
+            var r = Solve(s);
+            Near(r.Tops[a.Id].X, 400, "required slide");
+            foreach (var n in new[] { c, d }) Near(r.Tops[n.Id].X, baseline.Tops[n.Id].X, "unconstrained island");
+            Guarantees(s, r); Recognized(s, r);
+        });
+        Check("Per-island movement: X cannot break island ownership or ordering ties", () => {
+            var a = Component(1, "A", 500, 0); var b = Component(2, "B", 0, 80);
+            var c = Component(3, "C", -100, 0); var d = Component(4, "D", -100, 80);
+            var orphan = Component(5, "Orphan", 500, 200);
+            var s = Make(new[] { a, b, c, d, orphan }, Wire(a, b), Wire(c, d));
+            s.Inbound = new[] { new ExternalInbound { Node = a.Id, SourceGripX = 300 } };
+            Assert(Graph.TryCreate(s, out var graph, out _), "invalid scene");
+            var islands = Ranking.Assign(graph, out _);
+            Assert(islands[0].Any(n => n.Id == a.Id) && islands[0].Any(n => n.Id == orphan.Id), "X chose orphan owner");
+            var r = Solve(s); var applied = Applied(s, r);
+            Assert(Graph.TryCreate(applied, out graph, out _), "invalid output");
+            var after = Ranking.Assign(graph, out _);
+            Assert(islands.Select(i => string.Join(",", i.Select(n => n.Id).OrderBy(id => id)))
+                .SequenceEqual(after.Select(i => string.Join(",", i.Select(n => n.Id).OrderBy(id => id)))), "island membership changed");
+            Guarantees(s, r); Recognized(s, r);
+        });
         Check("Column windows: recognize a rounded free source whose level long wire is obstructed", () => {
             var root = Component(1, "Root", 0, 0, 1, height: 20);
             var source = Component(2, "Free source", 0, 49, 1, height: 123);
@@ -84,8 +120,6 @@ internal static partial class Program
             Guarantees(s, r);
         });
         Check("Column windows: a held island cannot subsidize a far return wire in another island", () => {
-            // Required behavior, currently failing. See the per-island movement
-            // blocker below before changing the production movement objective.
             var a = Component(1, "A", 0, 0); var b = Component(2, "B", 0, 80);
             var c = Component(3, "C", 0, 200); var d = Component(4, "D", 500, 280);
             var s = Make(new[] { a, b, c, d }, Wire(a, b), Wire(c, d));
@@ -183,30 +217,29 @@ internal static partial class Program
                 "packed return-wire fixed point not recognized");
             Assert(graph.WindowTops == null, "return wires bypassed the packed shortcut");
         });
-        Check("Per-island movement blocker: a required left slide changes another island's next anchor", () => {
+        Check("Per-island movement: a required left slide leaves the other island fixed", () => {
             var a = Component(1, "A", 0, 0); var b = Component(2, "B", 0, 80);
             var c = Component(3, "C", 0, 200); var d = Component(4, "D", 0, 280);
             var s = Make(new[] { a, b, c, d }, Wire(a, b), Wire(c, d));
             // B's current output is 90 <= 200. Packed B would output 210,
             // so A-B must slide left 10. C-D has no crossing constraint.
             s.Outbound = new[] { new ExternalOutbound { Node = b.Id, TargetGripX = 200 } };
-            var first = IndependentIslandWindows(s);
+            var first = Solve(s);
             Near(first.Tops[a.Id].X, -10, "required first slide");
             Near(first.Tops[b.Id].X, 110, "first consumer position");
             Near(first.Tops[c.Id].X, 0, "unconstrained island's zero movement");
             Near(first.Tops[d.Id].X, 120, "first unconstrained output");
             Assert(BoundaryCounts(s, first).Created == 0, "first plan broke the forward wire");
             var applied = Applied(s, first);
-            var second = IndependentIslandWindows(applied);
+            var second = Solve(applied);
             Near(second.Tops[a.Id].X, -10, "required island stays");
-            Near(second.Tops[c.Id].X, -10, "new union anchor pulls the other island left");
-            Near(second.Tops[d.Id].X, 110, "second unconstrained output");
+            Near(second.Tops[c.Id].X, 0, "other island keeps its own anchor");
+            Near(second.Tops[d.Id].X, 120, "second unconstrained output");
             Assert(BoundaryCounts(applied, second).Created == 0, "second plan broke the forward wire");
-            // This is a blocker witness, not permission to accept the drift.
-            // Default solver objectives remain unchanged until the anchor rule
-            // and fixed-point contract can be reconciled.
+            Assert(second.Moves.Count == 0, "second solve moved an island");
+            Guarantees(s, first); Recognized(s, first);
         });
-        Check("Column windows: disconnected islands share the envelope tie-break without sharing constraints", () => {
+        Check("Column windows: disconnected islands optimize movement without sharing constraints", () => {
             var a = Component(1, "A", 500, 0); var b = Component(2, "B", 0, 80);
             var c = Component(3, "C", 0, 200); var d = Component(4, "D", 50, 280);
             var s = Make(new[] { a, b, c, d }, Wire(a, b), Wire(c, d));
@@ -325,7 +358,7 @@ internal static partial class Program
                         {
                             var columns = Enumerable.Range(0, island.Max(n => matchedRanks[n.Id]) + 1)
                                 .Select(c => island.Where(n => matchedRanks[n.Id] == c).ToArray()).ToArray();
-                            var geometry = ColumnWindows.Place(graph, columns, applied.Nodes.Min(n => n.CurrentTop.X));
+                            var geometry = ColumnWindows.Place(graph, columns, ColumnWindows.OldLeft(island));
                             for (int c = 1; c < columns.Length; c++)
                             {
                                 double stretch = geometry.Left[c] - geometry.Left[c - 1] - geometry.Packed[c] + geometry.Packed[c - 1];
@@ -348,6 +381,72 @@ internal static partial class Program
             Assert(multipleOutsideIslands >= 70, "too few scenes exercise outside X in multiple islands");
             Console.WriteLine("Column windows created backward wires: " + legacyCreated + " -> " + windowsCreated + " across 700 seeded scenes");
             Console.WriteLine("Column windows multi-island coverage: " + multipleIslands + " scenes; " + multipleOutsideIslands + " with outside X in multiple islands");
+        });
+        Check("Column windows: 700 distinct-left multi-island scenes, mixed X, alignment and rounding", () => {
+            int packedCreated = 0, windowsCreated = 0;
+            int noOutside = 0, mixedOutside = 0, allOutside = 0, groupColumns = 0, indentedColumns = 0;
+            for (int scene = 0; scene < 700; scene++)
+            {
+                int seed = 164634 + scene * 7919;
+                try
+                {
+                    var random = new Random(seed);
+                    var nodes = new List<Node>(); var edges = new List<Edge>();
+                    var inbound = new List<ExternalInbound>(); var outbound = new List<ExternalOutbound>();
+                    int count = random.Next(2, 5), id = 0, mode = scene % 3;
+                    var members = new List<Node[]>();
+                    for (int island = 0; island < count; island++)
+                    {
+                        double left = -900 + island * 1300 + random.Next(4) * .25;
+                        bool groups = (scene + island) % 5 == 0;
+                        var ns = Enumerable.Range(0, random.Next(3, 7)).Select(j => {
+                            var n = Component(++id, "Island " + island + " node " + j,
+                                left + (j == 0 ? 0 : random.Next(500)), random.Next(-200, 800) + random.Next(4) * .25,
+                                width: random.Next(40, 180) + random.Next(4) * .25,
+                                height: random.Next(20, 100) + random.Next(4) * .25);
+                            n.PivotOffset = new Vec2(random.Next(20) + random.Next(4) * .25, random.Next(20) + random.Next(4) * .25);
+                            if (groups) n.Kind = NodeKind.Group;
+                            else if (j == 0) { n.Kind = NodeKind.Param; n.ParamRole = true; n.AlignRight = n.Width / 2; }
+                            return n;
+                        }).ToArray();
+                        members.Add(ns); nodes.AddRange(ns);
+                        edges.Add(Wire(ns[0], ns[2])); edges.Add(Wire(ns[1], ns[2], 1));
+                        for (int j = 3; j < ns.Length; j++) edges.Add(Wire(ns[j - 1], ns[j]));
+                        if (groups) groupColumns++; else indentedColumns++;
+                        if (mode == 0 || mode == 1 && island != 0) continue;
+                        // Include forward constraints and far pre-existing return wires.
+                        foreach (var n in ns)
+                        {
+                            if (random.Next(2) == 0) inbound.Add(new ExternalInbound { Node = n.Id,
+                                SourceGripX = left + random.Next(-200, 1000) + random.Next(4) * .25 });
+                            if (random.Next(2) == 0) outbound.Add(new ExternalOutbound { Node = n.Id,
+                                TargetGripX = left + random.Next(100, 1200) + random.Next(4) * .25 });
+                        }
+                        inbound.Add(new ExternalInbound { Node = ns[0].Id, SourceGripX = left + 3000 });
+                    }
+                    var s = Make(nodes.ToArray(), edges.ToArray());
+                    var packed = Solve(s); Guarantees(s, packed); Recognized(s, packed);
+                    foreach (var island in members)
+                        Near(island.Min(n => packed.Tops[n.Id].X), ColumnWindows.OldLeft(island), "packed island old left", .5);
+                    s.Inbound = inbound.ToArray(); s.Outbound = outbound.ToArray();
+                    var r = Solve(s); Guarantees(s, r); Recognized(s, r);
+                    var baseline = BoundaryCounts(s, packed); var actual = BoundaryCounts(s, r);
+                    Assert(actual.Created <= baseline.Created, "per-scene created-wire increase");
+                    packedCreated += baseline.Created; windowsCreated += actual.Created;
+                    foreach (var island in members.Where(ns => !inbound.Any(e => ns.Any(n => n.Id == e.Node)) &&
+                        !outbound.Any(e => ns.Any(n => n.Id == e.Node))))
+                        foreach (var n in island) Near(r.Tops[n.Id].X, packed.Tops[n.Id].X, "outside X in another island changed X");
+                    SameResult(r, Solve(new Snapshot { Nodes = Shuffle(s.Nodes, random), Edges = Shuffle(s.Edges, random),
+                        Inbound = Shuffle(s.Inbound, random), Outbound = Shuffle(s.Outbound, random), Options = s.Options }));
+                    if (mode == 0) noOutside++; else if (mode == 1) mixedOutside++; else allOutside++;
+                }
+                catch (Exception e) { throw new Exception("seed " + seed + ": " + e.Message); }
+            }
+            Assert(groupColumns > 0 && indentedColumns > 0, "missing alignment coverage");
+            Console.WriteLine("Distinct-left created backward wires: " + packedCreated + " -> " + windowsCreated + " across 700 seeded scenes");
+            Console.WriteLine("Distinct-left coverage: " + noOutside + " without outside X; " + mixedOutside +
+                " with outside X on one island only; " + allOutside + " with X on every island; " + groupColumns +
+                " pure-group islands; " + indentedColumns + " indented islands");
         });
         Check("Return-pin guard blocker: qualifying release cannot be rediscovered after orphan reranking", () => {
             // With this all-component fixture, loose mode differs from releasing

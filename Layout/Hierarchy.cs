@@ -443,14 +443,20 @@ namespace HopperFormat.Layout
                 outbound.AddRange(snapshot.Outbound.Where(e => owner.ContainsKey(e.Node)).Select(e => new ExternalOutbound {
                     Node = owner[e.Node].Node.Id, Port = Port(owner[e.Node], e.Node, e.Port, false), TargetGripY = e.TargetGripY,
                     TargetGripX = fixedFrame ? e.TargetGripX : null, TargetObjectId = e.TargetObjectId }));
-                var result = LayoutSolver.Solve(new Snapshot { Nodes = units.Select(u => u.Node).ToArray(), Edges = edges,
-                    Inbound = inbound, Outbound = outbound, Options = snapshot.Options });
+                var level = new Snapshot { Nodes = units.Select(u => u.Node).ToArray(), Edges = edges,
+                    Inbound = inbound, Outbound = outbound, Options = snapshot.Options };
+                var result = LayoutSolver.Solve(level);
                 if (!result.Success) throw new InvalidOperationException(label + ": contracted graph: " + result.Diagnostic);
                 unstable |= result.Unstable; rounds = Math.Max(rounds, result.Rounds);
                 log.AddRange(result.Log.Select(line => label + ": " + line));
                 notices.AddRange(result.Notices.Select(line => label + ": " + line));
                 bool windows = fixedFrame && (inbound.Any(e => Graph.Finite(e.SourceGripX)) || outbound.Any(e => Graph.Finite(e.TargetGripX)));
-                double dx = windows ? 0 : LayoutSolver.Round(anchor.X - result.Tops.Values.Min(t => t.X)),
+                // A shared correction would couple independently anchored islands
+                // after child growth. Keep legacy anchoring for a single island
+                // and the all-unconnected column; otherwise trust LayoutSolver X.
+                Graph.TryCreate(level, out var levelGraph, out _);
+                bool independentIslands = edges.Count > 0 && Ranking.Assign(levelGraph, out _).Count > 1;
+                double dx = windows || independentIslands ? 0 : LayoutSolver.Round(anchor.X - result.Tops.Values.Min(t => t.X)),
                     dy = LayoutSolver.Round(anchor.Y - result.Tops.Values.Min(t => t.Y));
                 foreach (var u in units)
                 {
