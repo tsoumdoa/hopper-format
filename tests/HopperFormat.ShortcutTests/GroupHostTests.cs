@@ -205,16 +205,19 @@ internal static class GroupHostTests
             var f = new Fixture(); f.Document.SelectedObjects();
             var c = FormatAllCapture.Capture(f.Document, new Options()); var r = FormatAllSolver.Solve(c.Snapshot);
             Assert(r.Layout.Success && r.Layout.Moves.Count > 0, r.Layout.Diagnostic);
+            c.IncludeSatellites(r.Layout);
             var originals = c.Objects.ToDictionary(p => p.Key,p => p.Value.Attributes.Pivot);
             Assert(FormatApplier.Apply(f.Document,r.Layout.Moves,c.Objects,out var status,true,true),status);
             var record = f.Document.UndoUtil.Records.Single();
             Assert(record.Name == "Format all groups" && f.Document.UndoUtil.Creates == 1
                 && record.Before.All(p => p.Value == originals[p.Key.InstanceGuid])
+                && record.Before.ContainsKey(f.Loose) && !record.Before.ContainsKey(f.Unrelated)
                 && new[] { f.Outer,f.Inner,f.Label }.All(g => g.CacheExpirations == 1), "record/cache contract");
             var next = FormatAllCapture.Capture(f.Document,new Options()); var again = FormatAllSolver.Solve(next.Snapshot);
             Assert(again.Layout.Success && again.Layout.Moves.Count == 0 && !again.Layout.Unstable, "format all not fixed after host remeasurement");
             var fail = new Fixture(); fail.Document.SelectedObjects();
             c = FormatAllCapture.Capture(fail.Document,new Options()); r = FormatAllSolver.Solve(c.Snapshot);
+            c.IncludeSatellites(r.Layout);
             originals = c.Objects.ToDictionary(p => p.Key,p => p.Value.Attributes.Pivot);
             var last = r.Layout.Moves.Last(); var old = originals[last.Id];
             c.Objects[last.Id].Attributes.TransformPivot = p => p == old ? p : new PointF(p.X + 2,p.Y);
@@ -247,6 +250,7 @@ internal static class GroupHostTests
                 var label = new GH_Group { NickName = "Other label", PadTop = 20 + Fraction() }; label.ObjectIDs.Add(n.InstanceGuid);
                 f.Document.Objects.AddRange(new IGH_DocumentObject[] { n,label }); f.Document.SelectedObjects();
                 var c = FormatAllCapture.Capture(f.Document,new Options()); var r = FormatAllSolver.Solve(c.Snapshot);
+                c.IncludeSatellites(r.Layout);
                 foreach (var obj in c.Objects.Values)
                     obj.Attributes.TransformPivot = p => new PointF((float)Math.Round(p.X),(float)Math.Round(p.Y));
                 foreach (var move in r.Layout.Moves) {
@@ -257,6 +261,7 @@ internal static class GroupHostTests
                 }
                 Assert(r.Layout.Success && FormatApplier.Apply(f.Document,r.Layout.Moves,c.Objects,out _,true,true), "first fractional run failed");
                 c = FormatAllCapture.Capture(f.Document,new Options()); r = FormatAllSolver.Solve(c.Snapshot);
+                c.IncludeSatellites(r.Layout);
                 Assert(r.Layout.Success && r.Layout.Moves.Count == 0, "fractional host seed " + seed + " second run moved: " + string.Join(";",r.Layout.Moves.Select(m => m.Id + " delta=" + (m.Pivot.X-c.Objects[m.Id].Attributes.Pivot.X) + "," + (m.Pivot.Y-c.Objects[m.Id].Attributes.Pivot.Y))));
             }
         });
@@ -293,8 +298,10 @@ internal static class GroupHostTests
             var c = FormatAllCapture.Capture(f.Document,new Options()); var r = FormatAllSolver.Solve(c.Snapshot);
             Assert(c.Snapshot.Targets.All(t => t.SkipReason == null) && c.Log.Any(l => l.Contains("empty bounds"))
                 && r.Layout.Success && !r.Layout.Unstable && r.Skipped == 0 && r.Formatted == 2 && !r.Layout.Tops.ContainsKey(bad.InstanceGuid),"capture skipped a recoverable root");
+            c.IncludeSatellites(r.Layout);
             Assert(FormatApplier.Apply(f.Document,r.Layout.Moves,c.Objects,out var status,true,true),status);
             c = FormatAllCapture.Capture(f.Document,new Options()); r = FormatAllSolver.Solve(c.Snapshot);
+            c.IncludeSatellites(r.Layout);
             Assert(r.Layout.Success && !r.Layout.Unstable && r.Layout.Moves.Count == 0,"recovered capture not fixed after apply: " + r.Layout.Diagnostic + " " + string.Join(";",r.Layout.Log) + " moves=" + string.Join(";",r.Layout.Moves.Select(m => c.Objects[m.Id].NickName + "=" + (m.Pivot.X-c.Objects[m.Id].Attributes.Pivot.X) + "," + (m.Pivot.Y-c.Objects[m.Id].Attributes.Pivot.Y))));
         });
         Check("Format-all preflight counts an unformattable dataflow cycle as a movable rigid root", () => {

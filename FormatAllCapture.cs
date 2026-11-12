@@ -13,6 +13,13 @@ namespace HopperFormat
         internal GroupMembership.Index Membership { get; private set; }
         internal readonly Dictionary<Guid, IGH_DocumentObject> Objects = new Dictionary<Guid, IGH_DocumentObject>();
         internal readonly List<string> Log = new List<string>();
+        private readonly Dictionary<Guid, IGH_DocumentObject> looseObjects = new Dictionary<Guid, IGH_DocumentObject>();
+
+        internal void IncludeSatellites(Result result)
+        {
+            foreach (var id in result.Tops.Keys)
+                if (looseObjects.TryGetValue(id, out var obj)) Objects[id] = obj;
+        }
 
         internal static int EligibleCount(GH_Document document)
         {
@@ -30,7 +37,10 @@ namespace HopperFormat
             var roots = membership.Roots;
             var grouped = new HashSet<Guid>(membership.Members.Values.SelectMany(ids => ids));
             foreach (var obj in document.Objects.Where(o => !(o is GH_Group) && !grouped.Contains(o.InstanceGuid)))
+            {
                 AddObstacle(obj);
+                if (obj.Attributes != null && FormatAllSolver.Measurable(Bounds(obj))) capture.looseObjects[obj.InstanceGuid] = obj;
+            }
             foreach (var root in roots)
             {
                 var reason = membership.FormatAllDiagnostic(root);
@@ -75,7 +85,10 @@ namespace HopperFormat
                 targets.Add(new FormatAllTarget { Id = group.InstanceGuid, Label = SelectionSnapshot.DescribeGroup(document, group, membership), Bounds = bounds,
                     Fixed = true, SkipReason = membership.FormatAllDiagnostic(group) ?? "No top-level ownership root" });
             }
-            capture.Snapshot = new FormatAllSnapshot { Targets = targets, Obstacles = obstacles, Options = options };
+            capture.Snapshot = new FormatAllSnapshot { Targets = targets, Obstacles = obstacles, Options = options,
+                Wires = BackwardWireCapture.Capture(document),
+                LooseObjects = capture.looseObjects.Values.Select(obj => new NonNodeMember { Id = obj.InstanceGuid, Label = SelectionSnapshot.Label(obj),
+                    Bounds = Bounds(obj), PivotOffset = new Vec2(obj.Attributes.Pivot.X - obj.Attributes.Bounds.X, obj.Attributes.Pivot.Y - obj.Attributes.Bounds.Y) }).ToArray() };
             return capture;
 
             Box Bounds(IGH_DocumentObject obj)

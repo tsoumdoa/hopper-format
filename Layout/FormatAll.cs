@@ -23,6 +23,9 @@ namespace HopperFormat.Layout
     {
         public IReadOnlyList<FormatAllTarget> Targets { get; set; } = Array.Empty<FormatAllTarget>();
         public IReadOnlyList<Box> Obstacles { get; set; } = Array.Empty<Box>();
+        // LooseObjects also appear in Obstacles until promoted to satellites.
+        public IReadOnlyList<NonNodeMember> LooseObjects { get; set; } = Array.Empty<NonNodeMember>();
+        public IReadOnlyList<WireX> Wires { get; set; } = Array.Empty<WireX>();
         public Options Options { get; set; } = new Options();
     }
 
@@ -139,7 +142,31 @@ namespace HopperFormat.Layout
             }
 
             var boxes = solved.ToDictionary(s => s.Target.Id, s => s.Result.GroupBoxes[s.Target.Id]);
-            var tidy = GroupTidy.Solve(boxes, obstacles, snapshot.Options);
+            // Preserve the existing geometric fixed point, including an ordinary
+            // tidy result retained when rigid wire constraints were infeasible.
+            // With no inner or outer moves there can be no newly backward wire.
+            Result ordinary = null;
+            bool innerStill = solved.All(s => s.Result.Tops.All(p => {
+                var b = physicalMembers[s.Target.Id][p.Key].Bounds;
+                return SamePivot(p.Value.X, b.X) && SamePivot(p.Value.Y, b.Y);
+            }));
+            if (snapshot.Wires.Count > 0 && innerStill) ordinary = GroupTidy.Solve(boxes, obstacles, snapshot.Options);
+            bool fixedPoint = ordinary != null && ordinary.Success && boxes.All(p =>
+                SamePivot(p.Value.X, ordinary.GroupBoxes[p.Key].X) && SamePivot(p.Value.Y, ordinary.GroupBoxes[p.Key].Y));
+            WireTidyPlan Plan(bool enabled) => WireTidyPlan.Create(enabled ? snapshot : new FormatAllSnapshot(),
+                solved.Select(s => (s.Target.Id, s.Result)).ToArray(), physicalMembers, boxes, obstacles, aliases, nodeIds);
+            var wirePlan = Plan(!fixedPoint);
+            var tidy = GroupTidy.Solve(wirePlan.Boxes, wirePlan.Obstacles, snapshot.Options, wirePlan);
+            if (!tidy.Success && wirePlan.HasBounds)
+            {
+                // This subset changes only rigid group placement, not inner gaps.
+                // Keep the exact old result when those rigid constraints conflict.
+                // The ordinary geometric fixed point above makes that fallback
+                // stable on the next capture without session state or markers.
+                wirePlan = Plan(false);
+                tidy = ordinary ?? GroupTidy.Solve(boxes, obstacles, snapshot.Options);
+                Notice("Wire-aware tidy: conflicting rigid bounds; kept ordinary tidy (satellites fixed).");
+            }
             if (!tidy.Success) return new FormatAllResult { Skipped = skipped, Layout = tidy };
             log.AddRange(tidy.Log);
             notices.AddRange(tidy.Notices);
@@ -148,7 +175,7 @@ namespace HopperFormat.Layout
             var moves = new SortedDictionary<Guid, Move>();
             foreach (var item in solved)
             {
-                var before = boxes[item.Target.Id]; var after = tidy.GroupBoxes[item.Target.Id];
+                var before = wirePlan.Boxes[item.Target.Id]; var after = tidy.GroupBoxes[item.Target.Id];
                 double dx = after.X - before.X, dy = after.Y - before.Y;
                 var physical = physicalMembers[item.Target.Id];
                 foreach (var pair in item.Result.Tops)
@@ -166,6 +193,20 @@ namespace HopperFormat.Layout
                 foreach (var pair in item.Result.GroupBoxes)
                     groupBoxes.Add(pair.Key, Translate(pair.Value, dx, dy));
             }
+            int satellitesMoved = 0;
+            foreach (var satellite in wirePlan.Satellites.OrderBy(s => s.Member.Id))
+            {
+                var before = wirePlan.Boxes[satellite.Owner]; var after = tidy.GroupBoxes[satellite.Owner];
+                var top = new Vec2(satellite.Bounds.X + after.X - before.X, satellite.Bounds.Y + after.Y - before.Y);
+                tops.Add(satellite.Member.Id, top);
+                var old = satellite.Member.Bounds; var offset = satellite.Member.PivotOffset;
+                if (!SamePivot(top.X + offset.X, old.X + offset.X) || !SamePivot(top.Y + offset.Y, old.Y + offset.Y))
+                {
+                    moves.Add(satellite.Member.Id, new Move { Id = satellite.Member.Id, Pivot = new Vec2(top.X + offset.X, top.Y + offset.Y) });
+                    satellitesMoved++;
+                }
+            }
+            if (wirePlan.Satellites.Count > 0) Notice("Satellites: " + satellitesMoved + " loose objects moved");
             foreach (var alias in snapshot.Targets.Where(t => aliases.ContainsKey(t.Id)).OrderBy(t => t.Id))
             {
                 var node = physicalMembers[alias.Id][nodeIds[alias.Id][0]];
@@ -264,6 +305,9 @@ namespace HopperFormat.Layout
         }
 
         public static Result Solve(IReadOnlyDictionary<Guid, Box> targets, IReadOnlyList<Box> obstacles, Options options)
+            => Solve(targets, obstacles, options, null);
+
+        internal static Result Solve(IReadOnlyDictionary<Guid, Box> targets, IReadOnlyList<Box> obstacles, Options options, WireTidyPlan wires)
         {
             double gx = options.GroupGapX, gy = options.GroupGapY;
             if (!Graph.Finite(gx) || !Graph.Finite(gy) || gx < 0 || gy < 0)
@@ -315,6 +359,31 @@ namespace HopperFormat.Layout
                     bool aligned = column.Max(id => boxes[id].X) - left < 1 - Epsilon;
                     foreach (var id in column) lefts[id] = aligned ? boxes[id].X : SnapX(id, anchor);
                 }
+                bool constrained = wires != null && wires.HasBounds;
+                if (constrained)
+                {
+                    // Wire positions are relational, including between rows. Solve
+                    // them together with same-row clearance in the horizontal step.
+                    // Current positions enter only through the movement objective;
+                    // snapping/evening must not continually pull against a bound.
+                    Dictionary<Guid, double> Horizontal(bool clearance)
+                    {
+                        var wireBounds = wires.Bounds(boxes, clearance).ToArray();
+                        var preferred = HorizontalConstraints.Solve(boxes.Keys, wireBounds);
+                        if (preferred == null) return null;
+                        var bounds = wireBounds.ToList();
+                        foreach (var row in rows)
+                        {
+                            var members = row.Members.OrderBy(id => boxes[id].X + preferred[id]).ThenBy(id => id).ToArray();
+                            for (int i = 1; i < members.Length; i++) bounds.Add(new HorizontalConstraints.Bound(members[i - 1], members[i],
+                                boxes[members[i - 1]].Right + gx - boxes[members[i]].X));
+                        }
+                        return HorizontalConstraints.Solve(boxes.Keys, bounds);
+                    }
+                    var shifts = Horizontal(true) ?? Horizontal(false);
+                    if (shifts == null) return new Result { Diagnostic = "Wire-aware tidy has no rigid horizontal placement." };
+                    foreach (var id in boxes.Keys) lefts[id] = boxes[id].X + shifts[id];
+                }
                 var placed = obstacles.ToList();
                 var next = new Dictionary<Guid, Box>();
                 foreach (var row in rows)
@@ -336,7 +405,7 @@ namespace HopperFormat.Layout
                         double y = Math.Abs(top - row.Top) > Epsilon ? GapY(id, top)
                             : aligned ? b.Y : SnapY(id, rowAnchor);
                         // Only earlier neighbours in this snapped row may push right.
-                        if (sameRow.Count > 0)
+                        if (!constrained && sameRow.Count > 0)
                         {
                             double right = sameRow.Max(p => p.Right);
                             if (x - right < 2 * gx - Epsilon) x = GapX(id, right + gx);

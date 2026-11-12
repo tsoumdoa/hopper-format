@@ -910,11 +910,13 @@ internal static partial class Program
         return result;
     }
 
-    private static void Main()
+    private static void Main(string[] args)
     {
+        if (args.Contains("--format-all-wires")) { Environment.ExitCode = FormatAllWireTests.Run(); return; }
         GoldenTests(); BalanceTests(); OrderingTests(); ValidationTests(); BackwardWireTests(); RandomTests();
         failures += HierarchyTests.Run();
         failures += FormatAllTests.Run();
+        failures += FormatAllWireTests.Run();
         Environment.ExitCode = failures == 0 ? 0 : 1;
     }
 }

@@ -101,12 +101,39 @@ internal static class SessionTests
             f.Session.RunAll();
             Assert(f.First.Attributes.Pivot.X != f.First.InitialPivot.X && f.Second.Attributes.Pivot.X != f.Second.InitialPivot.X,
                 "both cross-group endpoints must move horizontally");
-            Assert(f.Session.Log(false).Contains("Backward wires: 3 -> 1 (1 new)") &&
-                f.Session.Status.EndsWith(" · 1 new backward wire(s)") && PillText(f) == f.Session.Status,
+            Assert(f.Session.Log(false).Contains("Backward wires: 3 -> 0") &&
+                !f.Session.Status.Contains("new backward") && PillText(f) == f.Session.Status,
                 "cross-group metric lost or duplicated a wire: " + string.Join(";", f.Session.Log(false)));
             f.Session.RunAll();
-            Assert(f.Session.Status == "Formatted all groups · 0 moves" && f.Session.Log(false).Contains("Backward wires: 1 -> 1") &&
+            Assert(f.Session.Status == "Formatted all groups · 0 moves" && f.Session.Log(false).Contains("Backward wires: 0 -> 0") &&
                 f.Document.UndoUtil.Records.Count == 1 && PillText(f) == f.Session.Status, "format-all no-op changed: " + string.Join(";", f.Session.Log(false)));
+        });
+        Check(form, "FF format all moves a loose satellite in the single undo record and repeats without moves", f =>
+        {
+            f.Document.Objects.Clear(); f.Document.Selection.Clear();
+            var chain = Enumerable.Range(0, 4).Select(i => new TestComponent(1, 1) {
+                InitialPivot = new PointF(new[] { 0, 200, 400, 700 }[i], 100) }).ToArray();
+            for (int i = 1; i < chain.Length; i++) TestParam.Connect(chain[i - 1].Params.Output[0], chain[i].Params.Input[0]);
+            var loose = new TestParam { InitialPivot = new PointF(560, 0) };
+            var unrelated = new TestComponent { InitialPivot = new PointF(2000, 0) };
+            TestParam.Connect(loose, chain[3].Params.Input[0]);
+            var group = new GH_Group { Document = f.Document };
+            group.ObjectIDs.AddRange(chain.Select(n => n.InstanceGuid));
+            f.Document.Objects.AddRange(chain.Cast<IGH_DocumentObject>().Concat(new IGH_DocumentObject[] { loose, unrelated, group }));
+            Tap(f.Canvas); Tap(f.Canvas);
+            Assert(loose.Attributes.Pivot.X < loose.InitialPivot.X && unrelated.Attributes.Pivot == unrelated.InitialPivot,
+                "satellite did not follow or non-satellite moved");
+            Assert(f.Session.Log(false).Contains("Satellites: 1 loose objects moved") &&
+                f.Session.Log(false).Contains("Backward wires: 0 -> 0") && !f.Session.Status.Contains("new backward"),
+                "satellite metric/log missing: " + string.Join(";", f.Session.Log(false)));
+            var record = f.Document.UndoUtil.Records.Single();
+            Assert(record.Name == "Format all groups" && record.Before.ContainsKey(loose) && record.Before[loose] == loose.InitialPivot,
+                "satellite absent from undo or recorded after mutation");
+            Tap(f.Canvas); Tap(f.Canvas);
+            Assert(f.Session.LastMoves == 0 && f.Document.UndoUtil.Records.Count == 1 && f.Session.Log(false).Contains("Backward wires: 0 -> 0"),
+                "satellite repeat moved or created undo");
+            foreach (var pair in record.Before) { pair.Key.Attributes.Pivot = pair.Value; pair.Key.Attributes.PerformLayout(); }
+            Assert(loose.Attributes.Pivot == loose.InitialPivot, "single undo did not restore satellite");
         });
         Check(form, "Selected group instability warning remains visible without Debug", f =>
         {

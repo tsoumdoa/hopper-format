@@ -197,6 +197,7 @@ namespace HopperFormat
                         if (layout.Notices.Contains(line)) _log.Add(line);
                         else _detail.Add(line);
                     if (!layout.Success) { Finish(layout.Diagnostic); return; }
+                    all.IncludeSatellites(layout);
                     var backward = BackwardWireCapture.Count(_document, layout.Moves, all.Objects);
                     bool applied = FormatApplier.Apply(_document, layout.Moves, all.Objects, out var allStatus, true, true, all.Membership);
                     if (applied)
