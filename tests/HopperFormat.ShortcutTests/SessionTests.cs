@@ -61,6 +61,30 @@ internal static class SessionTests
                 && f.Document.UndoUtil.Records.Single().Name == "Format selection" && extraA.Attributes == null && extraB.Attributes == null,
                 "flat selection was refused by unrelated ownership");
         });
+        Check(form, "Format-all backward metric counts cross-group wires once using both final displacements", f =>
+        {
+            f.Second.InitialPivot = new PointF(200, 250);
+            f.First.Params.Input.Add(new TestParam { Owner = f.First, Kind = GH_ParamKind.input });
+            var a = new TestComponent(0, 1) { InitialPivot = new PointF(0, 80) };
+            var b = new TestComponent(1, 1) { InitialPivot = new PointF(40, 80) };
+            var c = new TestComponent(0, 1) { InitialPivot = new PointF(150, 250) };
+            TestParam.Connect(a.Params.Output[0], b.Params.Input[0]);
+            TestParam.Connect(b.Params.Output[0], f.First.Params.Input[0]);
+            TestParam.Connect(c.Params.Output[0], f.Second.Params.Input[0]);
+            var ga = new GH_Group { Document = f.Document }; var gb = new GH_Group { Document = f.Document };
+            ga.ObjectIDs.AddRange(new[] { a.InstanceGuid, b.InstanceGuid, f.First.InstanceGuid });
+            gb.ObjectIDs.AddRange(new[] { c.InstanceGuid, f.Second.InstanceGuid });
+            f.Document.Objects.AddRange(new IGH_DocumentObject[] { a, b, c, ga, gb });
+            f.Session.RunAll();
+            Assert(f.First.Attributes.Pivot.X != f.First.InitialPivot.X && f.Second.Attributes.Pivot.X != f.Second.InitialPivot.X,
+                "both cross-group endpoints must move horizontally");
+            Assert(f.Session.Log(false).Contains("Backward wires: 3 -> 1 (1 new)") &&
+                f.Session.Status.EndsWith(" · 1 new backward wire(s)") && PillText(f) == f.Session.Status,
+                "cross-group metric lost or duplicated a wire: " + string.Join(";", f.Session.Log(false)));
+            f.Session.RunAll();
+            Assert(f.Session.Status == "Formatted all groups · 0 moves" && f.Session.Log(false).Contains("Backward wires: 0 -> 0") &&
+                f.Document.UndoUtil.Records.Count == 1 && PillText(f) == f.Session.Status, "format-all no-op changed");
+        });
         Check(form, "Selected group instability warning remains visible without Debug", f =>
         {
             var group = new GH_Group { NickName = "Selected group", Document = f.Document };

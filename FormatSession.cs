@@ -233,6 +233,9 @@ namespace HopperFormat
 
         private void Finish(string status)
         {
+            // Refused/rolled-back runs have no final moves or touched wires.
+            if (!_log.Any(line => line.StartsWith("Backward wires: ", StringComparison.Ordinal)))
+                _log.Add("Backward wires: 0 -> 0");
             _log.Insert(0, status);
             Show(status);
         }

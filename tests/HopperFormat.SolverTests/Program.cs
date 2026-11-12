@@ -4,7 +4,7 @@ using System.Globalization;
 using System.Linq;
 using HopperFormat.Layout;
 
-internal static class Program
+internal static partial class Program
 {
     private static int failures;
 
@@ -910,7 +910,7 @@ internal static class Program
 
     private static void Main()
     {
-        GoldenTests(); BalanceTests(); OrderingTests(); ValidationTests(); RandomTests();
+        GoldenTests(); BalanceTests(); OrderingTests(); ValidationTests(); BackwardWireTests(); RandomTests();
         failures += HierarchyTests.Run();
         failures += FormatAllTests.Run();
         Environment.ExitCode = failures == 0 ? 0 : 1;

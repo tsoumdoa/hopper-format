@@ -40,6 +40,23 @@ internal static class FormatAllTests
     {
         int failures = 0;
         void Check(string name, Action test) { try { test(); Console.WriteLine("PASS " + name); } catch (Exception e) { failures++; Console.WriteLine("FAIL " + name + ": " + e.Message); } }
+        Check("Format all ignores outside X during inner solves without mutating captured geometry", () => {
+            var chain = Enumerable.Range(1, 4).Select(i => TestNode(i, (i - 1) * 100, i * 60)).ToArray();
+            var early = TestNode(5, 100, 0);
+            Edge E(Node a, Node b) => new Edge { From = a.Id, To = b.Id };
+            var root = new HierarchyGroup { Id = Id(100), Nodes = chain.Concat(new[] { early }).ToArray() };
+            var external = new ExternalOutbound { Node = early.Id };
+            var h = new HierarchySnapshot { Groups = new[] { root }, Outbound = new[] { external },
+                Edges = new[] { E(chain[0], chain[1]), E(chain[1], chain[2]), E(chain[2], chain[3]), E(chain[0], early) } };
+            var s = new FormatAllSnapshot { Targets = new[] { new FormatAllTarget { Id = root.Id,
+                Bounds = new Box(0, 0, 380, 280), Hierarchy = h } } };
+            var legacy = FormatAllSolver.Solve(s).Layout;
+            external.TargetGripX = 230;
+            var r = FormatAllSolver.Solve(s).Layout;
+            Assert(r.Success && legacy.Success && r.Log.SequenceEqual(legacy.Log) && r.Tops.All(p =>
+                p.Value.X == legacy.Tops[p.Key].X && p.Value.Y == legacy.Tops[p.Key].Y), "outside X changed format-all output");
+            Assert(external.TargetGripX == 230, "format all mutated outside X");
+        });
         Check("Format-all skipped diagnostics consume complete group descriptions and include root context once", () => {
             const string label = "group [A, B, C, …] at (120, 340)";
             var root = new HierarchyGroup { Id = Id(1), Label = label, Nodes = new[] { TestNode(100, 130, 360) }, Padding = new Padding(-1, 0, 0, 0) };

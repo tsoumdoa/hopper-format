@@ -92,7 +92,17 @@ namespace HopperFormat.Layout
                 Result result = null;
                 try
                 {
-                    if (reason == null && target.Hierarchy != null) result = HierarchySolver.Solve(target.Hierarchy);
+                    if (reason == null && target.Hierarchy != null)
+                    {
+                        var h = target.Hierarchy;
+                        // Tidy will move these roots after their independent solves.
+                        result = HierarchySolver.Solve(new HierarchySnapshot { Groups = h.Groups, LooseNodes = h.LooseNodes,
+                            Edges = h.Edges, Options = h.Options,
+                            Inbound = h.Inbound.Select(e => new ExternalInbound { Node = e.Node, Port = e.Port,
+                                SourceGripY = e.SourceGripY, SourceObjectId = e.SourceObjectId }).ToArray(),
+                            Outbound = h.Outbound.Select(e => new ExternalOutbound { Node = e.Node, Port = e.Port,
+                                TargetGripY = e.TargetGripY, TargetObjectId = e.TargetObjectId }).ToArray() });
+                    }
                     reason = reason ?? (result == null ? "Missing hierarchy snapshot" : result.Success ? null : result.Diagnostic);
                     if (reason == null && !result.GroupBoxes.ContainsKey(target.Id)) reason = "no measurable members";
                 }
