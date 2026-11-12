@@ -106,7 +106,8 @@ internal static partial class Program
         if (snapshot.Nodes.Count == 0) return;
         Near(result.Anchor.X, snapshot.Nodes.Min(n => n.CurrentTop.X), "reported anchor X");
         Near(result.Anchor.Y, snapshot.Nodes.Min(n => n.CurrentTop.Y), "reported anchor Y");
-        Near(result.Tops.Values.Min(t => t.X), result.Anchor.X, "placed anchor X", 1);
+        if (!snapshot.Inbound.Any(e => Graph.Finite(e.SourceGripX)) && !snapshot.Outbound.Any(e => Graph.Finite(e.TargetGripX)))
+            Near(result.Tops.Values.Min(t => t.X), result.Anchor.X, "placed anchor X", 1);
         Near(result.Tops.Values.Min(t => t.Y), result.Anchor.Y, "placed anchor Y", 1);
     }
 

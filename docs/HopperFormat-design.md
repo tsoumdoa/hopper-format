@@ -95,7 +95,7 @@ External
   inbound[]   (node, port, sourceGripY, sourceGripX?, sourceObjectId)
   outbound[]  (node, port, targetGripY, targetGripX?, targetObjectId)
 
-Anchor   top-left of the content envelope: the union of member bounds before formatting
+Anchor   old top-left of the content envelope; Y is retained, X is a movement tie-break
 Gaps     gapX, gapY, stackGap
 Options  keepOrder, loose
 ```
@@ -140,9 +140,9 @@ This is what puts a slider beside the component it feeds instead of in column 0 
 
 **Orphans.** A node with no edges keeps its relative position: it takes the rank of the ranked node whose current x is nearest to its own. Disconnected islands are ranked independently and stacked below the main graph in rank order.
 
-#### 5.4.1 Boundary-aware return pin: blocked by the current orphan rule
+#### 5.4.1 Boundary-aware return pin: still deferred; column windows instead
 
-Outside X is currently captured and measured, but does not change ranking. The proposed guard would release a terminal's return pin when the pinned solve creates a backward outbound wire, a trial without that pin fixes it, and the trial keeps other currently-forward outbound wires forward. Its released set would start empty on every format, grow deterministically, and be threaded through ranking and fixed-point recognition. Its intended scope is flat selections, the outer Selection level and a sole selected root's own level. Child-group and format-all solves have moving outside frames and must not use outside X for this purpose; their synthetic sibling hints omit X, and format-all inner snapshots strip X without mutating the capture.
+Outside X now guides column windows (5.5), but does not change ranking. The proposed guard would release a terminal's return pin when the pinned solve creates a backward outbound wire, a trial without that pin fixes it, and the trial keeps other currently-forward outbound wires forward. Its released set would start empty on every format, grow deterministically, and be threaded through ranking and fixed-point recognition. Its intended scope is flat selections, the outer Selection level and a sole selected root's own level. Child-group and format-all solves have moving outside frames and must not use outside X for this purpose; their synthetic sibling hints omit X, and format-all inner snapshots strip X without mutating the capture.
 
 That exact guard conflicts with idempotence under the current orphan rule. A reproducible fixture in `tests/HopperFormat.SolverTests/BackwardWireTests.cs` has the chain `A -> B -> C -> D -> Z`, plus `A -> Early`, `Feeder -> Early` and an unconnected Orphan. All nodes are components, height 44, with output grip X equal to width, pivot offset (12, 7), and the default gaps. Their initial `(left, top, width)` values are A=(100,0,250), B=(200,60,80), C=(300,120,80), D=(400,180,80), Z=(500,240,80), Feeder=(0,300,40), Early=(100,360,80), Orphan=(0,420,200). Early's only outside consumer has input X=750; there are no other outbound wires.
 
@@ -155,18 +155,32 @@ That exact guard conflicts with idempotence under the current orphan rule. A rep
 
 Both release conditions hold on the first run: 180 <= 750, 810 > 750 and 360 <= 750, with no other outbound wire to harm. After applying the release, the next run's empty released set produces 690 <= 750. Condition 1 is now false, so the guard cannot release Early again; repinning it moves the layout. Threading the released set through fixed-point matching cannot resolve this, because that second run never adds Early to the set. The fixture uses loose mode to express the trial: Early is the only effective terminal pin, Z is already at maximum, and no param exemptions apply.
 
-The guard is therefore deferred, preserving existing ranking and zero-move second formats. Completing it requires revising either the eligibility condition (to recognize and retain prior released fixed points) or the orphan-ranking policy so the counterfactual pinned layout is stable across the first format. Neither change is implemented here. The tests retain the exact counterexample and verify that outside X alone leaves existing solver output unchanged.
+The guard is therefore deferred, preserving existing ranking and zero-move second formats. Completing it requires revising either the eligibility condition (to recognize and retain prior released fixed points) or the orphan-ranking policy so the counterfactual pinned layout is stable across the first format. Neither change is implemented here. The tests retain the exact counterexample with outside X stripped to isolate the old guard, and separately verify that the normal pinned layout with windows is idempotent. No sink pin is released. Windows can slide this fixture left to keep Early forward without changing its rank.
 
-### 5.5 Step 3: column geometry
+### 5.5 Step 3: column geometry and boundary windows
 
-```text
-colWidth[c]   = max size.w over nodes in column c
-colLeft[0]    = anchor.x
-colLeft[c]    = colLeft[c-1] + colWidth[c-1] + gapX
-node.left     = colLeft[c] + colWidth[c] - size.w          (right-aligned bounds)
-```
+First build today's packed column positions and per-node alignment indents. Ordinary columns right-align on the maximum `AlignEdge` (width unless a labelled param supplies its own alignment); pure group columns and all-unconnected selections left-align. A packed step is the column's full indented width plus `GapX`, or `GroupGapX` when either adjacent column contains a group.
 
-Right alignment puts output grips on roughly one vertical line per column so wires to the next column start together. It is a heuristic, not a guarantee, because custom attributes place grips where they like.
+With known outside X, choose each column left independently, subject to **packed step <= adjacent step <= packed step + 150 px**. The whole selection may slide sideways; Y anchoring is unchanged. For every crossing wire, the node's own indent, pivot offset and measured port X give a lower bound (outside source) or upper bound (outside consumer) on that column's left. Retain every physical wire's bound, including duplicate and conflicting bounds, rather than reducing a column to one interval and losing its violation count. Unknown X contributes no horizontal constraint.
+
+Minimize these objectives lexicographically, without approximate weights:
+
+1. Number of currently forward crossing wires made backward.
+2. Number of currently backward crossing wires left backward.
+3. Total gap stretch above packed steps.
+4. Absolute sideways displacement of the **emitted selection envelope's** left edge from the old left edge.
+
+Remaining ties use stable column coordinates. Prefer the usual packed rounding phase when it achieves the same optimum and emitted envelope. No crossing X, or a packed placement already satisfying every bound, retains today's output exactly. Separate islands keep independent windows; their final envelope movement objective is shared across the whole selection. Using the new global left edge as a separate movement target for each island causes second-run drift.
+
+`Layout/ColumnWindows.cs` supplies one plan to both `Placement.Compact` and `FixedPoint.Reconstruct`. It writes only solve-local graph state. Subtract packed positions to obtain column shifts `s[c]`, with `0 <= s[c+1] - s[c] <= 150`. A reverse dynamic program counts broken bounds, then minimizes stretch. Monotone queues select suffixes within each 150 px window. Boundary events, tight gap events and rounded-envelope events supply candidate shifts. The implementation uses exact binary subunits of 1/1048576 px for raw shifts to represent outbound half-open bounds consistently; emitted pivots remain whole canvas units. Gap limits concern column positions before the existing independent pivot rounding (whose sub-unit clearance tolerance is unchanged).
+
+For disconnected islands, compute their independent optimal wire counts and stretch, then find the nearest achievable global envelope on either side of the old anchor. Reconstruct every island with that envelope as a lower bound. This permits one island to stay right of a source while another stays left of a consumer, without treating their first columns as one column.
+
+Bounds use the emitted grip `Round(columnLeft + indent + pivotOffset.x) - pivotOffset.x + grip.x`. Inbound equality is allowed; outbound equality is allowed and the next rounding half-interval is open. The integer-pivot threshold is checked with the actual grip arithmetic so cancellation cannot change equality's class. Classification and constraint satisfaction both use the strict backward predicate `outputX > inputX`, with no separate safety margin.
+
+**Why the optimum remains a fixed point.** Let B be the crossing wires left backward by the first optimum. On its own output, retaining that placement creates zero backward wires, so a competing optimum may only leave a subset of B backward. A strict subset would already have beaten the first optimum's wire objectives. With B unchanged, a smaller total stretch would also have beaten the first optimum. Its own emitted envelope now has zero sideways movement. The remaining coordinate ties are stable; no bounding footprint, trial ranking or counterfactual solve enters the penalties. Orphan columns still use the existing geometric recovery, and both placement and recognition evaluate the same horizontal plan. X recognition requires exact rounded horizontal pivots whenever a window plan is active or a current crossing wire is backward: its old inferred common rounding translation could cross an absolute outside-wire threshold. The legacy packed rounding family remains recognizable when both the current crossing wires and the packed candidate are all forward. Y retains the existing common-translation recognition.
+
+Scope stays at `Hierarchy.SolveLevel`'s existing `fixedFrame` levels: flat selections, the top Selection solve, and a sole selected root's own level. Nested child and moving-root inner solves retain Y-only hints; the fixed outer level may translate a completed child rigidly. Format-all inner solves continue to strip outside X. Ranking, including all sink pins, is unchanged.
 
 ### 5.6 Step 4: vertical order (crossing reduction)
 
@@ -218,9 +232,9 @@ The non-crossing chains make these block dependencies acyclic. Place upper neigh
 
 ### 5.8 Step 6: fixed point, anchor, convert
 
-1. **Geometric fixed point.** Recognize visible structure before optimizing: link adjacent-column wires whose grips are level within one unit; for a long wire, also require `gapY - 1` clearance from every intermediate real node before reconstructing its virtual lane items. Union all links into rigid groups, allowing several links per node to absorb accidental level wires. Order real nodes by top and lanes by wire y, retain measured offsets within groups, and use step 5's top-down compaction, separations and bottom-up free-source balance. Balance only single-node source groups with no visible level outgoing link; a source that reached such a wire is already rigidly linked to its target. Recover near-tight rounded contacts between groups and islands without accumulating rounding error. Accept only integral pivots whose reconstructed positions admit one common translation under the half-open ±0.5 rounding intervals. Alignment priorities are never replayed for recognition. Feed back an unrecognized result for up to 3 rounds; report `unstable` if it still has not settled.
-2. Translate each round's placed bounds to that round's union anchor and convert with `pivot = top + pivotOffset`, rounding to whole canvas units.
-3. After the last round, shift the whole result by a whole-unit vector that puts its union top-left within 0.5 of the **original** anchor. This removes accumulated anchor drift while preserving integral pivots and the fixed point. Emit a move for every node whose rounded pivot differs from its current one.
+1. **Geometric fixed point.** Recognize visible structure before optimizing: link adjacent-column wires whose grips are level within one unit; for a long wire, also require `gapY - 1` clearance from every intermediate real node before reconstructing its virtual lane items. Union all links into rigid groups, allowing several links per node to absorb accidental level wires. Order real nodes by top and lanes by wire y, retain measured offsets within groups, and use step 5's top-down compaction, separations and bottom-up free-source balance. Balance only single-node source groups with no visible level outgoing link; a source that reached such a wire is already rigidly linked to its target. Recover near-tight rounded contacts between groups and islands, and free-source balance contacts, without accumulating rounding error. Accept only integral pivots whose reconstructed positions admit one common translation under the half-open ±0.5 rounding intervals. Alignment priorities are never replayed for recognition. Feed back an unrecognized result for up to 3 rounds; report `unstable` if it still has not settled.
+2. Translate each round's placed bounds to that round's union anchor in Y (also X when outside X is absent) and convert with `pivot = top + pivotOffset`, rounding to whole canvas units.
+3. After the last round, correct the union top to within 0.5 of the **original Y anchor** using a whole-unit translation. Correct X likewise only when outside X is absent. This removes accumulated anchor drift while preserving integral pivots and the fixed point. Emit a move for every node whose rounded pivot differs from its current one.
 
 ### 5.9 Groups (phase 2)
 
@@ -258,7 +272,7 @@ Used when FF's selection holds two or more top-level units, where a unit is a gr
   - A column that holds only groups is **left-aligned**.
   - Any link or column involving a loose node keeps the phase-one rules: grip alignment and right-aligned columns.
 - **No lanes at group boundaries:** long wires with a RigidGroup at either end get no reserved lanes. Grasshopper draws wires above group boxes, so they read as crossing over a group, not plugged into it. Virtual nodes are still used for crossing reduction.
-- **Anchor:** the selection's top-left. Nothing outside the selection moves.
+- **Anchor:** retain the selection's top in Y; its old left edge is the final movement tie-break when outside X supplies column windows. Nothing outside the selection moves.
 - A selection that is exactly one group formats that group's contents only.
 
 #### 5.9.4 Arranging groups with format all: tidy in place
@@ -295,12 +309,12 @@ All measured on the applied, remeasured layout, not on the solver's internal num
 - **Deterministic**: the same snapshot gives the same moves in the same order.
 - **No overlaps** among the target's own nodes.
 - **Left-to-right dataflow**: for every internal edge, `left(from) < left(to)`.
-- **Anchored**: the target's content envelope keeps its top-left.
+- **Anchored**: the target's content envelope keeps its top in Y. With outside X it may slide sideways to satisfy column windows; without outside X it keeps the old left edge.
 - **Non-members untouched**: the move list contains only members.
 
 Crossings are a reported metric, logged before and after, not a guarantee. The before and after layouts have different columns and the counts are not strictly comparable.
 
-**Backward wires** are also a reported metric, not a guarantee: output grip X strictly greater than input grip X. The host counts every physical wire touching an object in the final move list, including internal wires and wires between different format-all roots, once per wire. It applies both endpoints' final composed horizontal displacements; objects absent from the map stay fixed. Unknown grip X is ignored. Log always includes `Backward wires: <before> -> <after>`, followed by ` (<created> new)` when a forward wire became backward. Status and the feedback pill append ` · <created> new backward wire(s)` only when created is positive. With zero created their existing text is unchanged. A no-op has no touched wires, reports `Backward wires: 0 -> 0`, and creates no undo record. First-tap hints that preserve previous outputs still preserve them.
+**Backward wires** are also a reported metric, not a guarantee: output grip X strictly greater than input grip X. The host counts every physical wire touching an object in the final move list, including internal wires and wires between different format-all roots, once per wire. It applies both endpoints' final composed horizontal displacements; objects absent from the map stay fixed. Unknown grip X is ignored. Successful applied formats, including successful no-ops, log `Backward wires: <before> -> <after>`, followed by ` (<created> new)` when a forward wire became backward. Status and the feedback pill append ` · <created> new backward wire(s)` only when created is positive. With zero created their existing text is unchanged. A no-op has no touched wires, reports `Backward wires: 0 -> 0`, and creates no undo record. Refused, failed and rolled-back formats emit no backward-wire line because no final layout was measured. First-tap hints that preserve previous outputs still preserve them.
 
 ### 5.11 Worked example
 

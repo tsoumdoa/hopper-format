@@ -15,6 +15,7 @@ namespace HopperFormat.Layout
         internal Dictionary<Guid, List<Edge>> In, Out;
         internal HashSet<Guid> Returns;
         internal List<Node> Topological;
+        internal Dictionary<Guid, double> WindowTops;
 
         internal static int CompareNodes(Node a, Node b)
         {

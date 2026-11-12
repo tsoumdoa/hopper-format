@@ -29,13 +29,21 @@ namespace HopperFormat.Layout
         {
             if (graph.Nodes.Any(n => Math.Abs(n.CurrentTop.X + n.PivotOffset.X - LayoutSolver.Round(n.CurrentTop.X + n.PivotOffset.X)) > 1e-8 ||
                 Math.Abs(n.CurrentTop.Y + n.PivotOffset.Y - LayoutSolver.Round(n.CurrentTop.Y + n.PivotOffset.Y)) > 1e-8)) return false;
+            ColumnWindows.Prepare(graph, islands, ranks, anchor.X);
+            bool windows = ColumnWindows.HasOutsideX(graph);
+            bool exactX = graph.WindowTops != null ||
+                graph.Snapshot.Inbound.Any(e => Graph.Finite(e.SourceGripX) &&
+                    graph.ById[e.Node].CurrentTop.X + graph.ById[e.Node].Inputs[e.Port].X < e.SourceGripX.Value) ||
+                graph.Snapshot.Outbound.Any(e => Graph.Finite(e.TargetGripX) &&
+                    graph.ById[e.Node].CurrentTop.X + graph.ById[e.Node].Outputs[e.Port].X > e.TargetGripX.Value);
             var raw = new Dictionary<Guid, Vec2>();
             if (graph.Edges.Length == 0)
             {
                 double y = anchor.Y;
+                double x = ColumnWindows.Place(graph, new[] { graph.Nodes }, anchor.X, true).Left[0];
                 foreach (var node in graph.Nodes)
                 {
-                    raw[node.Id] = new Vec2(anchor.X, y);
+                    raw[node.Id] = new Vec2(x, y);
                     y += node.Height + Placement.UnconnectedGap(graph, node);
                 }
             }
@@ -57,7 +65,7 @@ namespace HopperFormat.Layout
                     if (placed == null) return false;
                     double minX = island.Min(n => placed[n.Id].X), minY = island.Min(n => placed[n.Id].Y);
                     foreach (var node in island)
-                        raw[node.Id] = new Vec2(placed[node.Id].X + anchor.X - minX, placed[node.Id].Y + y - minY);
+                        raw[node.Id] = new Vec2(placed[node.Id].X + (windows ? 0 : anchor.X - minX), placed[node.Id].Y + y - minY);
                     y = island.Max(n => raw[n.Id].Y + n.Height) + Placement.IslandGap(graph, island, islands.SkipWhile(i => i != island).Skip(1).FirstOrDefault() ?? new List<Node>());
                     previous = island;
                     previousBottom = island.Max(n => n.CurrentTop.Y + n.Height);
@@ -70,6 +78,10 @@ namespace HopperFormat.Layout
             foreach (var node in graph.Nodes)
             {
                 var expected = raw[node.Id];
+                // Outside X fixes the canvas frame: an inferred horizontal
+                // rounding translation could cross a wire's exact threshold.
+                if (exactX && LayoutSolver.Round(expected.X + node.PivotOffset.X) !=
+                    LayoutSolver.Round(node.CurrentTop.X + node.PivotOffset.X)) return false;
                 double dx = node.CurrentTop.X - expected.X, dy = node.CurrentTop.Y - expected.Y;
                 lowX = Math.Max(lowX, dx - 0.5); highX = Math.Min(highX, dx + 0.5);
                 lowY = Math.Max(lowY, dy - 0.5); highY = Math.Min(highY, dy + 0.5);

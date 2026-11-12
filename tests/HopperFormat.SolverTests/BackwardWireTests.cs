@@ -5,8 +5,86 @@ using HopperFormat.Layout;
 
 internal static partial class Program
 {
+    private static BackwardWireCounts BoundaryCounts(Snapshot s, Result r)
+    {
+        var nodes = s.Nodes.ToDictionary(n => n.Id);
+        var wires = s.Inbound.Where(e => Graph.Finite(e.SourceGripX)).Select(e => new WireX(e.SourceObjectId,
+            e.SourceGripX.Value, e.Node, nodes[e.Node].CurrentTop.X + nodes[e.Node].Inputs[e.Port].X))
+            .Concat(s.Outbound.Where(e => Graph.Finite(e.TargetGripX)).Select(e => new WireX(e.Node,
+                nodes[e.Node].CurrentTop.X + nodes[e.Node].Outputs[e.Port].X, e.TargetObjectId, e.TargetGripX.Value)));
+        return BackwardWires.Count(wires, nodes.Values.ToDictionary(n => n.Id, n => r.Tops[n.Id].X - n.CurrentTop.X));
+    }
+
     private static void BackwardWireTests()
     {
+        Check("Column windows: fixed-point recognition cannot translate across a fractional wire threshold", () => {
+            var n = Component(1, "Node", 0, 0);
+            var s = Make(new[] { n });
+            s.Inbound = new[] { new ExternalInbound { Node = n.Id, SourceGripX = .25 } };
+            var r = Solve(s); Near(r.Tops[n.Id].X, 1, "fractional source threshold"); Guarantees(s, r);
+            s.Inbound = Array.Empty<ExternalInbound>();
+            s.Outbound = new[] { new ExternalOutbound { Node = n.Id, TargetGripX = n.Width - .25 } };
+            r = Solve(s); Near(r.Tops[n.Id].X, -1, "fractional consumer threshold"); Guarantees(s, r);
+        });
+        Check("Column windows: slide right of an outside source and left of an outside consumer", () => {
+            var a = Component(1, "A", 500, 0); var b = Component(2, "B", 0, 80);
+            var s = Make(new[] { a, b }, Wire(a, b));
+            s.Inbound = new[] { new ExternalInbound { Node = a.Id, SourceGripX = 300 } };
+            var r = Solve(s); Near(r.Tops[a.Id].X, 300, "source window"); Guarantees(s, r);
+            a.CurrentTop = new Vec2(0, 0); b.CurrentTop = new Vec2(50, 80);
+            s.Inbound = Array.Empty<ExternalInbound>();
+            s.Outbound = new[] { new ExternalOutbound { Node = b.Id, TargetGripX = 200 } };
+            r = Solve(s); Near(r.Tops[b.Id].X + b.Width, 200, "consumer window"); Guarantees(s, r);
+        });
+        Check("Column windows: both boundaries open one gap; impossible conflict respects 150 cap", () => {
+            var a = Component(1, "A", 0, 0); var b = Component(2, "B", 500, 80);
+            var s = Make(new[] { a, b }, Wire(a, b));
+            s.Outbound = new[] { new ExternalOutbound { Node = a.Id, TargetGripX = 90 } };
+            s.Inbound = new[] { new ExternalInbound { Node = b.Id, SourceGripX = 250 } };
+            var r = Solve(s); Near(r.Tops[a.Id].X, 0, "held left"); Near(r.Tops[b.Id].X, 250, "held right");
+            Assert(BoundaryCounts(s, r).Created == 0, "avoidable backward wire"); Guarantees(s, r);
+            s.Inbound[0].SourceGripX = 400;
+            r = Solve(s); Assert(BoundaryCounts(s, r).Created == 1, "conflict must sacrifice exactly one wire");
+            double gap = r.Tops[b.Id].X - r.Tops[a.Id].X - a.Width;
+            Assert(gap >= 30 && gap <= 180, "conflict exceeded gap cap"); Guarantees(s, r);
+        });
+        Check("Column windows: keep a pre-existing backward wire when fixing it breaks a forward wire", () => {
+            var a = Component(1, "A", 0, 0); var b = Component(2, "B", 0, 80);
+            var s = Make(new[] { a, b }, Wire(a, b));
+            s.Outbound = new[] { new ExternalOutbound { Node = a.Id, TargetGripX = 90 } };
+            s.Inbound = new[] { new ExternalInbound { Node = b.Id, SourceGripX = 300 } };
+            var r = Solve(s); var counts = BoundaryCounts(s, r);
+            Assert(counts.Created == 0 && counts.Before == 1 && counts.After == 1, "forward priority lost");
+            Near(r.Tops[b.Id].X - r.Tops[a.Id].X, 120, "unnecessary stretch"); Guarantees(s, r);
+        });
+        Check("Column windows: satisfied boundaries preserve today's output exactly, including fractional geometry", () => {
+            var s = RandomDag(30011); var legacy = Solve(s);
+            foreach (var e in s.Inbound) e.SourceGripX = -10000;
+            foreach (var e in s.Outbound) e.TargetGripX = 10000;
+            SameResult(legacy, Solve(s));
+        });
+        Check("Column windows: disconnected islands share the envelope tie-break without sharing constraints", () => {
+            var a = Component(1, "A", 500, 0); var b = Component(2, "B", 0, 80);
+            var c = Component(3, "C", 0, 200); var d = Component(4, "D", 50, 280);
+            var s = Make(new[] { a, b, c, d }, Wire(a, b), Wire(c, d));
+            s.Inbound = new[] { new ExternalInbound { Node = a.Id, SourceGripX = 300 } };
+            s.Outbound = new[] { new ExternalOutbound { Node = d.Id, TargetGripX = 200 } };
+            var r = Solve(s); Assert(BoundaryCounts(s, r).Created == 0, "independent windows coupled"); Guarantees(s, r);
+        });
+        Check("Column windows: per-node grip offsets, equality thresholds and unconnected nodes", () => {
+            var a = Component(1, "A", 250.25, 0, width: 120.25);
+            var b = Component(2, "B", 10.5, 80, width: 70.75);
+            a.PivotOffset = new Vec2(12.25, 7); b.PivotOffset = new Vec2(12.5, 7);
+            a.Inputs[0] = new Vec2(9.25, 11); b.Outputs[0] = new Vec2(67.5, 22);
+            var s = Make(new[] { a, b });
+            s.Inbound = new[] { new ExternalInbound { Node = a.Id, SourceGripX = 100.25 } };
+            s.Outbound = new[] { new ExternalOutbound { Node = b.Id, TargetGripX = 200.5 } };
+            var r = Solve(s); Assert(BoundaryCounts(s, r).Created == 0, "per-node windows lost"); Guarantees(s, r);
+            var applied = Applied(s, r);
+            s.Inbound[0].SourceGripX = r.Tops[a.Id].X + a.Inputs[0].X;
+            s.Outbound[0].TargetGripX = r.Tops[b.Id].X + b.Outputs[0].X;
+            r = Solve(applied); Assert(BoundaryCounts(applied, r).Created == 0, "equality became backward"); Guarantees(applied, r);
+        });
         Check("Backward counter: forward, backward, created, both ends moved and unknown", () => {
             void Counts(WireX wire, Dictionary<Guid, double> dx, int before, int after, int created)
             {
@@ -46,8 +124,9 @@ internal static partial class Program
             inbound.SourceGripX = -123; outbound.TargetGripX = 456;
             Assert(Graph.TryCreate(s, out _, out _), "finite X rejected");
         });
-        Check("Outside X is data only: 400 random DAGs retain legacy output and guarantees", () => {
-            for (int i = 0; i < 400; i++)
+        Check("Column windows: 700 random DAGs, fixed points, caps, legacy comparison and determinism", () => {
+            int legacyCreated = 0, windowsCreated = 0;
+            for (int i = 0; i < 700; i++)
             {
                 int seed = 30011 + i * 7919;
                 try
@@ -56,7 +135,32 @@ internal static partial class Program
                     var legacy = Solve(s);
                     foreach (var e in s.Outbound) { e.TargetGripX = random.Next(-200, 1800) + random.Next(4) * .25; e.TargetObjectId = Id(500); }
                     foreach (var e in s.Inbound) { e.SourceGripX = random.Next(-200, 1800) + random.Next(4) * .25; e.SourceObjectId = Id(501); }
-                    var r = Solve(s); SameResult(legacy, r); Guarantees(s, r);
+                    var r = Solve(s); Guarantees(s, r);
+                    var oldCounts = BoundaryCounts(s, legacy); var newCounts = BoundaryCounts(s, r);
+                    Assert(newCounts.Created <= oldCounts.Created, "created more backward wires: " + oldCounts.Created + " -> " + newCounts.Created);
+                    legacyCreated += oldCounts.Created; windowsCreated += newCounts.Created;
+                    var applied = Applied(s, r);
+                    Assert(Graph.TryCreate(applied, out var graph, out var diagnostic), diagnostic);
+                    Assert(FixedPoint.TryMatch(graph, new Vec2(applied.Nodes.Min(n => n.CurrentTop.X), applied.Nodes.Min(n => n.CurrentTop.Y)),
+                        out var matchedRanks, out var islands, out _), "windows fixed point not recognized");
+                    if (s.Edges.Count > 0)
+                        foreach (var island in islands)
+                        {
+                            var columns = Enumerable.Range(0, island.Max(n => matchedRanks[n.Id]) + 1)
+                                .Select(c => island.Where(n => matchedRanks[n.Id] == c).ToArray()).ToArray();
+                            var geometry = ColumnWindows.Place(graph, columns, applied.Nodes.Min(n => n.CurrentTop.X));
+                            for (int c = 1; c < columns.Length; c++)
+                            {
+                                double stretch = geometry.Left[c] - geometry.Left[c - 1] - geometry.Packed[c] + geometry.Packed[c - 1];
+                                Assert(stretch >= -1e-8 && stretch <= 150 + 1e-8, "gap stretch " + stretch);
+                            }
+                        }
+                    foreach (var e in s.Inbound) e.SourceGripX = null;
+                    foreach (var e in s.Outbound) e.TargetGripX = null;
+                    SameResult(legacy, Solve(s));
+                    foreach (var e in s.Inbound) e.SourceGripX = random.Next(-200, 1800) + random.Next(4) * .25;
+                    foreach (var e in s.Outbound) e.TargetGripX = random.Next(-200, 1800) + random.Next(4) * .25;
+                    r = Solve(s);
                     SameResult(r, Solve(new Snapshot { Nodes = Shuffle(s.Nodes, random), Edges = Shuffle(s.Edges, random),
                         Inbound = Shuffle(s.Inbound, random), Outbound = Shuffle(s.Outbound, random), Options = s.Options }));
                     Assert(r.Moves.All(m => m.Pivot.X == Math.Floor(m.Pivot.X) && m.Pivot.Y == Math.Floor(m.Pivot.Y)), "fractional pivot");
@@ -64,6 +168,7 @@ internal static partial class Program
                 }
                 catch (Exception e) { throw new Exception("seed " + seed + ": " + e.Message); }
             }
+            Console.WriteLine("Column windows created backward wires: " + legacyCreated + " -> " + windowsCreated + " across 700 seeded scenes");
         });
         Check("Return-pin guard blocker: qualifying release cannot be rediscovered after orphan reranking", () => {
             // With this all-component fixture, loose mode differs from releasing
@@ -81,6 +186,9 @@ internal static partial class Program
             var s = Make(new[] { a, b, c, d, z, feeder, early, orphan },
                 Wire(a,b), Wire(b,c), Wire(c,d), Wire(d,z), Wire(a,early), Wire(feeder,early,1));
             s.Outbound = new[] { new ExternalOutbound { Node = early.Id, TargetGripX = 750 } };
+            var windows = Solve(s); Guarantees(s, windows);
+            Assert(windows.Ranks[early.Id] == 4, "sink pin unexpectedly released");
+            s.Outbound[0].TargetGripX = null; // Retain the exact historical guard counterexample with packed placement.
             var pinned = Solve(s);
             s.Options = new Options { ReturnConstraint = false };
             var released = Solve(s);

@@ -20,6 +20,7 @@ namespace HopperFormat.Layout
             var result = new Result { Success = true, Anchor = anchor };
             var log = new List<string>();
             var graph = original;
+            bool windows = ColumnWindows.HasOutsideX(original);
             Dictionary<Guid, Vec2> tops = new Dictionary<Guid, Vec2>();
             var matched = FixedPoint.TryMatch(graph, anchor, out var fixedRanks, out var islands, out var ranks);
             for (int round = 1; round <= 3; round++)
@@ -44,14 +45,16 @@ namespace HopperFormat.Layout
                     break;
                 }
                 tops = new Dictionary<Guid, Vec2>();
+                ColumnWindows.Prepare(graph, islands, ranks, roundAnchor.X);
                 var lanes = new HashSet<Edge>();
                 int before = 0, after = 0;
                 if (graph.Edges.Length == 0)
                 {
                     double y = roundAnchor.Y;
+                    double x = ColumnWindows.Place(graph, new[] { graph.Nodes }, roundAnchor.X, true).Left[0];
                     foreach (var node in graph.Nodes)
                     {
-                        tops[node.Id] = new Vec2(roundAnchor.X, y);
+                        tops[node.Id] = new Vec2(x, y);
                         y += node.Height + Placement.UnconnectedGap(graph, node);
                     }
                 }
@@ -69,13 +72,13 @@ namespace HopperFormat.Layout
                         double minY = island.Min(n => placed[n.Id].Y);
                         double minX = island.Min(n => placed[n.Id].X);
                         foreach (var node in island)
-                            tops[node.Id] = new Vec2(placed[node.Id].X + roundAnchor.X - minX, placed[node.Id].Y + nextY - minY);
+                            tops[node.Id] = new Vec2(placed[node.Id].X + (windows ? 0 : roundAnchor.X - minX), placed[node.Id].Y + nextY - minY);
                         nextY = island.Max(n => tops[n.Id].Y + n.Height) + Placement.IslandGap(graph, island, islands.SkipWhile(i => i != island).Skip(1).FirstOrDefault() ?? new List<Node>());
                     }
                 }
                 if (tops.Count > 0)
                 {
-                    double dx = roundAnchor.X - graph.Nodes.Min(n => tops[n.Id].X);
+                    double dx = windows ? 0 : roundAnchor.X - graph.Nodes.Min(n => tops[n.Id].X);
                     double dy = roundAnchor.Y - graph.Nodes.Min(n => tops[n.Id].Y);
                     foreach (var node in graph.Nodes)
                     {
@@ -113,7 +116,7 @@ namespace HopperFormat.Layout
             {
                 // Correct accumulated rounding drift against the original envelope.
                 // Integral translations preserve integral pivots and fixed points.
-                double dx = Round(anchor.X - tops.Values.Min(t => t.X));
+                double dx = windows ? 0 : Round(anchor.X - tops.Values.Min(t => t.X));
                 double dy = Round(anchor.Y - tops.Values.Min(t => t.Y));
                 foreach (var node in original.Nodes)
                     tops[node.Id] = new Vec2(tops[node.Id].X + dx, tops[node.Id].Y + dy);

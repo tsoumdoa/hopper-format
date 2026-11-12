@@ -179,29 +179,26 @@ namespace HopperFormat.Layout
                 if (item.Virtual || graph.In[item.Node.Id].Count != 0 || graph.Out[item.Node.Id].Count == 0) continue;
                 var desired = graph.Out[item.Node.Id].Select(e => {
                     var target = realItems[e.To];
+                    double alignment = GroupLink(item.Node, target.Node) ? 0 : target.Node.Inputs[e.ToPort].Y -
+                        item.Node.Outputs[e.FromPort].Y;
+                    double observed = item.Node.CurrentTop.Y - target.Node.CurrentTop.Y;
+                    if (rounded && Math.Abs(observed - alignment) < 1) alignment = observed;
                     return blockOf[target].Top + offsets[target] +
-                        (GroupLink(item.Node, target.Node) ? 0 : target.Node.Inputs[e.ToPort].Y -
-                        item.Node.Outputs[e.FromPort].Y) - offsets[item];
+                        alignment - offsets[item];
                 }).OrderBy(y => y).ToArray();
                 double limit = block.Below.Select(c => c.Block.Top - c.Distance).DefaultIfEmpty(double.PositiveInfinity).Min();
                 block.Top = Math.Max(block.Top, Math.Min(desired[(desired.Length - 1) / 2], limit));
             }
 
             var tops = new Dictionary<Guid, Vec2>();
-            double left = anchorX;
+            var geometry = ColumnWindows.Place(graph,
+                columns.Select(col => col.Where(i => !i.Virtual).Select(i => i.Node).ToArray()).ToArray(), anchorX);
             for (int c = 0; c < columns.Length; c++)
             {
                 var column = columns[c];
                 var real = column.Where(i => !i.Virtual).ToArray();
-                bool groupsOnly = real.All(i => PureGroup(i.Node));
-                double edge = real.Select(i => AlignEdge(i.Node)).DefaultIfEmpty(0).Max();
-                double Indent(Node n) => groupsOnly ? 0 : edge - AlignEdge(n);
-                double width = real.Select(i => Indent(i.Node) + i.Node.Width).DefaultIfEmpty(0).Max();
                 foreach (var item in real)
-                    tops.Add(item.Node.Id, new Vec2(left + Indent(item.Node), blockOf[item].Top + offsets[item]));
-                bool groupGap = column.Any(i => !i.Virtual && i.Node.Kind == NodeKind.Group) ||
-                    c + 1 < columns.Length && columns[c + 1].Any(i => !i.Virtual && i.Node.Kind == NodeKind.Group);
-                left += width + (groupGap ? graph.Options.GroupGapX : graph.Options.GapX);
+                    tops.Add(item.Node.Id, new Vec2(geometry.Left[c] + geometry.Indent[item.Node.Id], blockOf[item].Top + offsets[item]));
             }
             return tops;
         }

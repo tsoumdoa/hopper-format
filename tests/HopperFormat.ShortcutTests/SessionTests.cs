@@ -27,10 +27,10 @@ internal static class SessionTests
             Assert(f.Session.Log(false).Contains("Backward wires: 0 -> 0") && f.Session.Status == "Already formatted"
                 && PillText(f) == "Already formatted" && f.Document.UndoUtil.Records.Count == 1, "no-op changed status/undo");
         });
-        Check(form, "Created backward wire appears in log, status and pill for selection and groups", f =>
+        Check(form, "Column windows avoid the backward boundary wire for selection and groups", f =>
         {
             var outside = new TestComponent(1, 0) { InitialPivot = new PointF(190, 100) };
-            // The second component moves from x=30 to the second column, past this consumer.
+            // Packing at the old left would move the second column past this consumer.
             f.Second.Params.Output.Add(new TestParam { Owner = f.Second, Kind = GH_ParamKind.output });
             TestParam.Connect(f.Second.Params.Output[0], outside.Params.Input[0]);
             f.Document.Objects.Add(outside);
@@ -44,9 +44,10 @@ internal static class SessionTests
                     f.Document.Objects.Add(g); f.Document.Selection.Clear(); f.Document.Selection.Add(g);
                 }
                 f.Session.Run();
-                Assert(f.Session.Log(false).Contains("Backward wires: 1 -> 1 (1 new)")
-                    && f.Session.Status.EndsWith(" · 1 new backward wire(s)") && PillText(f) == f.Session.Status,
-                    "created count missing: " + string.Join(";", f.Session.Log(false)));
+                Assert(f.Session.Log(false).Contains("Backward wires: 1 -> 0")
+                    && !f.Session.Status.Contains("new backward") && PillText(f) == f.Session.Status,
+                    "window failed: " + string.Join(";", f.Session.Log(false)));
+                f.Session.Run(); Assert(f.Session.LastMoves == 0, "boundary format moved on repeat");
             }
         });
         Check(form, "Flat overlapping selection formats normally and records Format selection", f =>
@@ -132,10 +133,11 @@ internal static class SessionTests
             group.ObjectIDs.Add(f.First.InstanceGuid); f.Document.Objects.Add(group);
             f.Document.Selection.Clear(); f.Document.Selection.Add(group);
             f.Session.Run();
-            Assert(f.Session.Status == "Already formatted" && f.Session.LastMoves == 0
+            Assert(f.Session.Status.StartsWith("Formatted groups") && f.Session.LastMoves == 1
                 && !f.Session.Log(false).Any(line => line.Contains("Skipped"))
-                && f.Document.UndoUtil.Creates == 0 && f.First.Attributes != null && f.Second.Attributes.Pivot == f.Second.InitialPivot,
+                && f.Document.UndoUtil.Creates == 1 && f.First.Attributes != null && f.Second.Attributes.Pivot == f.Second.InitialPivot,
                 "label-only group was skipped or moved a loose node");
+            f.Session.Run(); Assert(f.Session.LastMoves == 0, "label window moved on repeat");
         });
         Check(form, "Session FF captures a selected group and writes one Format groups undo record", f =>
         {
@@ -157,6 +159,7 @@ internal static class SessionTests
             Assert(f.Session.Status == "'Protected [LOCK]': Selection belongs to locked group" && f.Session.LastMoves == 0
                 && f.Document.UndoUtil.Creates == 0 && f.First.Attributes.Pivot == f.First.InitialPivot
                 && f.Second.Attributes.Pivot == f.Second.InitialPivot, "locked selection moved or did not name the group");
+            Assert(!f.Session.Log(false).Any(line => line.StartsWith("Backward wires:")), "refusal invented a measurement");
         });
         Check(form, "Session FF selection refusal describes a default group once and never lays out its membership cycle", f =>
         {
@@ -325,6 +328,16 @@ internal static class SessionTests
             Assert(f.Session.Status.Contains("Gaps must be finite") && f.Document.UndoUtil.Creates == 0
                 && f.First.Attributes.Pivot == f.First.InitialPivot && f.Second.Attributes.Pivot == f.Second.InitialPivot,
                 "invalid options moved objects");
+            Assert(!f.Session.Log(false).Any(line => line.StartsWith("Backward wires:")), "failure invented a measurement");
+        });
+        Check(form, "Session rolled-back apply emits no backward measurement", f =>
+        {
+            f.Document.UndoUtil.Reject = true;
+            f.Session.Run();
+            Assert(f.Session.LastMoves == 0 && f.Document.UndoUtil.Records.Count == 0 &&
+                f.First.Attributes.Pivot == f.First.InitialPivot && f.Second.Attributes.Pivot == f.Second.InitialPivot,
+                "rejected undo was not rolled back");
+            Assert(!f.Session.Log(false).Any(line => line.StartsWith("Backward wires:")), "rollback invented a measurement");
         });
         Check(form, "Session paint failure logs once and disables pill without further invalidations", f =>
         {

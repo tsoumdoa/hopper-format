@@ -48,7 +48,7 @@ internal static class HierarchyTests
 
     internal static int Run()
     {
-        Check("Outside X preserves layouts at the sole root, nested child and moving sibling levels", () => {
+        Check("Outside X guides the sole root and stays absent at nested child and moving sibling levels", () => {
             var chain = Enumerable.Range(1, 4).Select(i => N(i, (i - 1) * 100, i * 60)).ToArray();
             var early = N(5, 100, 0);
             var child = G(101, chain.Concat(new[] { early }).ToArray());
@@ -58,11 +58,16 @@ internal static class HierarchyTests
             var legacy = Solve(s);
             e.TargetGripX = 230;
             var withX = Solve(s);
-            Assert(Fingerprint(withX) == Fingerprint(legacy), "outside X changed sole-root output");
+            Assert(withX.Tops[early.Id].X + early.Width <= 230 && withX.Tops[early.Id].X < legacy.Tops[early.Id].X,
+                "sole-root window did not keep the consumer forward");
             Stable(s, withX);
             s.Groups = new[] { G(100, Array.Empty<Node>(), child) };
             var nested = Solve(s); e.TargetGripX = null;
-            Assert(Fingerprint(nested) == Fingerprint(Solve(s)), "outside X changed nested-child output");
+            var nestedLegacy = Solve(s);
+            foreach (var n in chain.Concat(new[] { early }))
+                Near(nested.Tops[n.Id].X - nested.Tops[early.Id].X,
+                    nestedLegacy.Tops[n.Id].X - nestedLegacy.Tops[early.Id].X, "outside X changed nested-child relative layout");
+            e.TargetGripX = 230; Stable(s, nested); e.TargetGripX = null;
             // A wire crossing only a child boundary receives a Y hint, even
             // though the real sibling's input X is available in the flat graph.
             var sibling = N(6, 230, 100);
@@ -72,7 +77,7 @@ internal static class HierarchyTests
             var r = Solve(s); Stable(s, r);
             Near(r.Tops[early.Id].X, r.Tops[chain[3].Id].X, "child's terminal pin must remain");
         });
-        Check("Outside X preserves the top Selection layout and moving root layouts", () => {
+        Check("Outside X guides the top Selection layout and stays absent in moving root layouts", () => {
             var chain = Enumerable.Range(1, 4).Select(i => N(i, (i - 1) * 100, i * 60)).ToArray();
             var early = N(5, 100, 0);
             var s = new HierarchySnapshot { Groups = new[] { G(100, new[] { chain[0] }) },
@@ -81,7 +86,9 @@ internal static class HierarchyTests
                 Outbound = new[] { new ExternalOutbound { Node = early.Id, TargetGripX = 230 } } };
             var r = Solve(s);
             s.Outbound[0].TargetGripX = null;
-            Assert(Fingerprint(r) == Fingerprint(Solve(s)), "outside X changed Selection output"); Stable(s, r);
+            Assert(r.Tops[early.Id].X + early.Width <= 230 && r.Tops[early.Id].X < Solve(s).Tops[early.Id].X,
+                "Selection window did not keep the consumer forward");
+            s.Outbound[0].TargetGripX = 230; Stable(s, r);
             s.Outbound[0].TargetGripX = 230;
             s.Groups = new[] { G(100, chain.Concat(new[] { early }).ToArray()) };
             s.LooseNodes = new[] { N(6, 500, 0) };

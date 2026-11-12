@@ -449,7 +449,8 @@ namespace HopperFormat.Layout
                 unstable |= result.Unstable; rounds = Math.Max(rounds, result.Rounds);
                 log.AddRange(result.Log.Select(line => label + ": " + line));
                 notices.AddRange(result.Notices.Select(line => label + ": " + line));
-                double dx = LayoutSolver.Round(anchor.X - result.Tops.Values.Min(t => t.X)),
+                bool windows = fixedFrame && (inbound.Any(e => Graph.Finite(e.SourceGripX)) || outbound.Any(e => Graph.Finite(e.TargetGripX)));
+                double dx = windows ? 0 : LayoutSolver.Round(anchor.X - result.Tops.Values.Min(t => t.X)),
                     dy = LayoutSolver.Round(anchor.Y - result.Tops.Values.Min(t => t.Y));
                 foreach (var u in units)
                 {
