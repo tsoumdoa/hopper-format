@@ -9,6 +9,7 @@ namespace HopperFormat.Layout
     internal static class ColumnWindows
     {
         internal const double MaxStretch = 150;
+        internal const double MinClearance = 20;
         private const double Scale = 1048576; // exact binary subunits, never emitted as pivots
         private const long Cap = 150 * 1048576L;
 
@@ -64,12 +65,13 @@ namespace HopperFormat.Layout
         private static void PrepareIsland(Graph graph, Geometry g, double anchorX)
         {
             // Return wires cannot justify movement or stretch. Preserve the usual
-            // packed rounding family whenever it keeps all forward wires forward.
+            // packed rounding family whenever it violates neither protection tier.
             if (g.Bounds.SelectMany((bs, c) => bs.Select(b => new { Bound = b, Column = c })).All(p => {
                 var b = p.Bound;
                 if (!b.Forward) return true;
                 double grip = LayoutSolver.Round(g.Left[p.Column] + g.Indent[b.Node.Id] + b.Node.PivotOffset.X) - b.Node.PivotOffset.X + b.Grip;
-                return b.Lower ? grip >= b.Outside : grip <= b.Outside;
+                return b.Clearance ? (b.Lower ? grip - b.Outside : b.Outside - grip) >= MinClearance
+                    : b.Lower ? grip >= b.Outside : grip <= b.Outside;
             })) return;
 
             var seeds = new SortedSet<long> { (long)Math.Floor(anchorX * Scale), (long)Math.Ceiling(anchorX * Scale) };
@@ -105,7 +107,7 @@ namespace HopperFormat.Layout
                 var other = At(above);
                 if (Compare(other, chosen, Preference.Remaining, false) < 0) { target = above; chosen = other; }
             }
-            // Keep the legacy packed phase when all four objectives agree.
+            // Keep the legacy packed phase when all five objectives agree.
             var packed = Cost(g, Enumerable.Repeat((long)Math.Round(target * Scale), count).ToArray());
             if (Primary(packed, optimum) == 0 && packed.Envelope == target && packed.Remaining == chosen.Remaining)
                 chosen = packed;
@@ -138,25 +140,38 @@ namespace HopperFormat.Layout
                 double offset = g.Packed[c] + g.Indent[id] + n.PivotOffset.X;
                 // The actual grip is Round(shift + offset) - pivotOffset + grip.
                 // Use the same strict backward predicate on input and output.
-                double target = outside + n.PivotOffset.X - grip;
-                double pivot = lower ? Math.Ceiling(target) : Math.Floor(target);
-                bool Forward(double p) => lower ? p - n.PivotOffset.X + grip >= outside : p - n.PivotOffset.X + grip <= outside;
-                // Recheck the actual arithmetic: algebraic cancellation near an
-                // integral pivot must not classify an equal grip differently.
-                if (lower)
+                void AddBound(bool clearance)
                 {
-                    while (!Forward(pivot) && pivot + 1 > pivot) pivot++;
-                    while (pivot - 1 < pivot && Forward(pivot - 1)) pivot--;
+                    double margin = clearance ? MinClearance : 0;
+                    double target = outside + (lower ? margin : -margin) + n.PivotOffset.X - grip;
+                    double pivot = lower ? Math.Ceiling(target) : Math.Floor(target);
+                    bool Forward(double p)
+                    {
+                        double actual = p - n.PivotOffset.X + grip;
+                        return clearance ? (lower ? actual - outside : outside - actual) >= MinClearance
+                            : lower ? actual >= outside : actual <= outside;
+                    }
+                    // Recheck the actual arithmetic: algebraic cancellation near an
+                    // integral pivot must not classify an equal grip differently.
+                    if (lower)
+                    {
+                        while (!Forward(pivot) && pivot + 1 > pivot) pivot++;
+                        while (pivot - 1 < pivot && Forward(pivot - 1)) pivot--;
+                    }
+                    else
+                    {
+                        while (!Forward(pivot) && pivot - 1 < pivot) pivot--;
+                        while (pivot + 1 > pivot && Forward(pivot + 1)) pivot++;
+                    }
+                    double threshold = pivot + (lower ? -.5 : .5) - offset;
+                    long tick = lower ? (long)Math.Ceiling(threshold * Scale) : (long)Math.Ceiling(threshold * Scale) - 1;
+                    g.Bounds[c].Add(new Bound { Tick = tick, Lower = lower, Node = n, Grip = grip, Outside = outside,
+                        Clearance = clearance,
+                        Forward = clearance || (lower ? n.CurrentTop.X + grip >= outside : n.CurrentTop.X + grip <= outside) });
                 }
-                else
-                {
-                    while (!Forward(pivot) && pivot - 1 < pivot) pivot--;
-                    while (pivot + 1 > pivot && Forward(pivot + 1)) pivot++;
-                }
-                double threshold = pivot + (lower ? -.5 : .5) - offset;
-                long tick = lower ? (long)Math.Ceiling(threshold * Scale) : (long)Math.Ceiling(threshold * Scale) - 1;
-                g.Bounds[c].Add(new Bound { Tick = tick, Lower = lower, Node = n, Grip = grip, Outside = outside,
-                    Forward = lower ? n.CurrentTop.X + grip >= outside : n.CurrentTop.X + grip <= outside });
+                AddBound(false);
+                double oldGrip = n.CurrentTop.X + grip;
+                if ((lower ? oldGrip - outside : outside - oldGrip) >= MinClearance) AddBound(true);
             }
             foreach (var e in graph.Snapshot.Inbound.Where(e => Graph.Finite(e.SourceGripX)))
                 Add(e.Node, graph.ById[e.Node].Inputs[e.Port].X, e.SourceGripX.Value, true);
@@ -195,13 +210,13 @@ namespace HopperFormat.Layout
                             c + 1 < g.Columns.Length && queue.Count == 0) continue;
                         var suffix = c + 1 == g.Columns.Length ? new State { Path = Array.Empty<long>(), Envelope = double.PositiveInfinity }
                             : previous[flag, queue.First.Value];
-                        var state = new State { Created = suffix.Created, Remaining = suffix.Remaining,
+                        var state = new State { Created = suffix.Created, LostClearance = suffix.LostClearance, Remaining = suffix.Remaining,
                             Stretch = suffix.Stretch + (suffix.Path.Length == 0 ? 0 : suffix.Path[0] - values[k]),
                             Envelope = Math.Min(envelope, suffix.Envelope), Low = low || suffix.Low,
                             Path = new[] { values[k] }.Concat(suffix.Path).ToArray() };
                         foreach (var b in g.Bounds[c])
                             if (!(b.Lower ? values[k] >= b.Tick : values[k] <= b.Tick))
-                            { if (b.Forward) state.Created++; else state.Remaining++; }
+                            { if (b.Clearance) state.LostClearance++; else if (b.Forward) state.Created++; else state.Remaining++; }
                         int f = state.Low ? 1 : 0;
                         if (next[f, k] == null || Compare(state, next[f, k], preference, false) < 0) next[f, k] = state;
                     }
@@ -221,7 +236,7 @@ namespace HopperFormat.Layout
             for (int c = 0; c < path.Length; c++)
                 foreach (var b in g.Bounds[c])
                     if (!(b.Lower ? path[c] >= b.Tick : path[c] <= b.Tick))
-                    { if (b.Forward) state.Created++; else state.Remaining++; }
+                    { if (b.Clearance) state.LostClearance++; else if (b.Forward) state.Created++; else state.Remaining++; }
             return state;
         }
         private static State Best(IEnumerable<State> states, Preference preference)
@@ -234,6 +249,7 @@ namespace HopperFormat.Layout
         private static int Primary(State a, State b, bool transition = false)
         {
             int c = a.Created.CompareTo(b.Created);
+            if (c == 0) c = a.LostClearance.CompareTo(b.LostClearance);
             if (c == 0) c = (a.Stretch + (transition ? a.Path[0] : 0)).CompareTo(b.Stretch + (transition ? b.Path[0] : 0));
             return c;
         }
@@ -250,13 +266,13 @@ namespace HopperFormat.Layout
         internal sealed class Bound
         {
             internal long Tick;
-            internal bool Lower, Forward;
+            internal bool Lower, Forward, Clearance;
             internal Node Node;
             internal double Grip, Outside;
         }
         private sealed class State
         {
-            internal int Created, Remaining;
+            internal int Created, LostClearance, Remaining;
             internal long Stretch;
             internal double Envelope;
             internal bool Low;

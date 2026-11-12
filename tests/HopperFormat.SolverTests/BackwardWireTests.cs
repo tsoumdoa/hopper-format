@@ -15,6 +15,33 @@ internal static partial class Program
         return BackwardWires.Count(wires, nodes.Values.ToDictionary(n => n.Id, n => r.Tops[n.Id].X - n.CurrentTop.X));
     }
 
+    // Clearance is a second protection class; backward counts retain their strict definition.
+    private static int LostClearance(Snapshot s, Result r)
+    {
+        var nodes = s.Nodes.ToDictionary(n => n.Id);
+        return s.Inbound.Count(e => Graph.Finite(e.SourceGripX) &&
+            nodes[e.Node].CurrentTop.X + nodes[e.Node].Inputs[e.Port].X - e.SourceGripX.Value >= 20 &&
+            r.Tops[e.Node].X + nodes[e.Node].Inputs[e.Port].X - e.SourceGripX.Value < 20) +
+            s.Outbound.Count(e => Graph.Finite(e.TargetGripX) &&
+            e.TargetGripX.Value - (nodes[e.Node].CurrentTop.X + nodes[e.Node].Outputs[e.Port].X) >= 20 &&
+            e.TargetGripX.Value - (r.Tops[e.Node].X + nodes[e.Node].Outputs[e.Port].X) < 20);
+    }
+
+    private static void RecordNoOutside(System.Text.StringBuilder text, Result r)
+    {
+        text.Append(Moves(r)).Append('|').Append(r.Success).Append('|').Append(r.Diagnostic).Append('|')
+            .Append(r.Unstable).Append('|').Append(r.Rounds).Append('|').Append(r.CrossingsBefore).Append('|')
+            .Append(r.CrossingsAfter).Append('|').Append(string.Join(";", r.Log));
+        foreach (var pair in r.Tops.OrderBy(p => p.Key))
+            text.Append('|').Append(pair.Key).Append(':').Append(pair.Value.X.ToString("R", System.Globalization.CultureInfo.InvariantCulture))
+                .Append(',').Append(pair.Value.Y.ToString("R", System.Globalization.CultureInfo.InvariantCulture)).Append(':').Append(r.Ranks[pair.Key]);
+        foreach (var e in r.LaneEdges) text.Append('|').Append(e.From).Append(':').Append(e.FromPort).Append('>').Append(e.To).Append(':').Append(e.ToPort);
+        text.Append("\r\n"); // Fixed record separator for the hashes captured on deebe27.
+    }
+
+    private static string NoOutsideHash(System.Text.StringBuilder text) => Convert.ToHexString(
+        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text.ToString())));
+
     private static void Recognized(Snapshot s, Result r)
     {
         var applied = Applied(s, r);
@@ -55,7 +82,7 @@ internal static partial class Program
             var baseline = Solve(s);
             s.Inbound = new[] { new ExternalInbound { Node = a.Id, SourceGripX = 400 } };
             var r = Solve(s);
-            Near(r.Tops[a.Id].X, 400, "required slide");
+            Near(r.Tops[a.Id].X, 420, "required slide");
             foreach (var n in new[] { c, d }) Near(r.Tops[n.Id].X, baseline.Tops[n.Id].X, "unconstrained island");
             Guarantees(s, r); Recognized(s, r);
         });
@@ -147,12 +174,13 @@ internal static partial class Program
             var a = Component(1, "A", 500, 0); var b = Component(2, "B", 0, 80);
             var s = Make(new[] { a, b }, Wire(a, b));
             // Packed B is at shift+120. Keeping the source needs shift>=100;
-            // keeping B's consumer needs shift<=-100. Both cost one new wire.
+            // keeping B's consumer needs shift<=-100. Clearance moves both limits
+            // outward by 20; both directions cost one new wire and one lost clearance.
             s.Inbound = new[] { new ExternalInbound { Node = a.Id, SourceGripX = 100 },
                 new ExternalInbound { Node = b.Id, SourceGripX = 150 } };
             s.Outbound = new[] { new ExternalOutbound { Node = b.Id, TargetGripX = 110 } };
             var r = Solve(s);
-            Near(r.Tops[a.Id].X, 100, "remaining-wire movement tie-break");
+            Near(r.Tops[a.Id].X, 120, "remaining-wire movement tie-break");
             var counts = BoundaryCounts(s, r);
             Assert(counts.Created == 1 && counts.After == 1, "remaining-wire tie-break lost");
             Guarantees(s, r);
@@ -174,18 +202,18 @@ internal static partial class Program
             var a = Component(1, "A", 500, 0); var b = Component(2, "B", 0, 80);
             var s = Make(new[] { a, b }, Wire(a, b));
             s.Inbound = new[] { new ExternalInbound { Node = a.Id, SourceGripX = 300 } };
-            var r = Solve(s); Near(r.Tops[a.Id].X, 300, "source window"); Guarantees(s, r);
+            var r = Solve(s); Near(r.Tops[a.Id].X, 320, "source window"); Guarantees(s, r);
             a.CurrentTop = new Vec2(0, 0); b.CurrentTop = new Vec2(50, 80);
             s.Inbound = Array.Empty<ExternalInbound>();
             s.Outbound = new[] { new ExternalOutbound { Node = b.Id, TargetGripX = 200 } };
-            r = Solve(s); Near(r.Tops[b.Id].X + b.Width, 200, "consumer window"); Guarantees(s, r);
+            r = Solve(s); Near(r.Tops[b.Id].X + b.Width, 180, "consumer window"); Guarantees(s, r);
         });
         Check("Column windows: both boundaries open one gap; impossible conflict respects 150 cap", () => {
             var a = Component(1, "A", 0, 0); var b = Component(2, "B", 500, 80);
             var s = Make(new[] { a, b }, Wire(a, b));
             s.Outbound = new[] { new ExternalOutbound { Node = a.Id, TargetGripX = 90 } };
             s.Inbound = new[] { new ExternalInbound { Node = b.Id, SourceGripX = 250 } };
-            var r = Solve(s); Near(r.Tops[a.Id].X, 0, "held left"); Near(r.Tops[b.Id].X, 250, "held right");
+            var r = Solve(s); Near(r.Tops[a.Id].X, 0, "held left"); Near(r.Tops[b.Id].X, 270, "held right");
             Assert(BoundaryCounts(s, r).Created == 0, "avoidable backward wire"); Guarantees(s, r);
             s.Inbound[0].SourceGripX = 400;
             r = Solve(s); Assert(BoundaryCounts(s, r).Created == 1, "conflict must sacrifice exactly one wire");
@@ -200,6 +228,73 @@ internal static partial class Program
             var r = Solve(s); var counts = BoundaryCounts(s, r);
             Assert(counts.Created == 0 && counts.Before == 1 && counts.After == 1, "forward priority lost");
             Near(r.Tops[b.Id].X - r.Tops[a.Id].X, 120, "unnecessary stretch"); Guarantees(s, r);
+        });
+        Check("Clearance: outside consumer below a chain retains 20 px rather than zero slack", () => {
+            var a = Component(1, "A", 0, 0); var b = Component(2, "B", 30, 80);
+            var c = Component(3, "C", 60, 160);
+            var s = Make(new[] { a, b, c }, Wire(a, b), Wire(b, c));
+            s.Outbound = new[] { new ExternalOutbound { Node = c.Id, TargetGripX = 200, TargetGripY = 500 } };
+            var r = Solve(s);
+            Near(200 - (r.Tops[c.Id].X + c.Outputs[0].X), 20, "consumer clearance");
+            Assert(LostClearance(s, r) == 0, "lost feasible clearance");
+            Guarantees(s, r); Recognized(s, r);
+        });
+        Check("Clearance: packed shortcut must protect clearance even when packed stays forward", () => {
+            var a = Component(1, "A", 0, 0); var b = Component(2, "B", 50, 80);
+            var s = Make(new[] { a, b }, Wire(a, b));
+            s.Outbound = new[] { new ExternalOutbound { Node = b.Id, TargetGripX = 220 } };
+            var r = Solve(s);
+            Near(r.Tops[a.Id].X, -10, "packed shortcut lost clearance");
+            Near(220 - (r.Tops[b.Id].X + b.Width), 20, "clearance threshold");
+            Guarantees(s, r); Recognized(s, r);
+        });
+        Check("Clearance: tier 1 wins when retaining clearance would exceed the stretch cap", () => {
+            var a = Component(1, "A", 0, 0); var b = Component(2, "B", 500, 80);
+            var s = Make(new[] { a, b }, Wire(a, b));
+            s.Outbound = new[] { new ExternalOutbound { Node = a.Id, TargetGripX = 90 } };
+            s.Inbound = new[] { new ExternalInbound { Node = b.Id, SourceGripX = 260 } };
+            var r = Solve(s);
+            Assert(BoundaryCounts(s, r).Created == 0 && LostClearance(s, r) == 1, "tier 1 must win");
+            Near(r.Tops[b.Id].X, 260, "stop at forward threshold");
+            Near(r.Tops[b.Id].X - r.Tops[a.Id].X, 260, "minimum tier-1 stretch");
+            Guarantees(s, r); Recognized(s, r);
+        });
+        Check("Clearance: a wire starting at 5 px does not justify extra movement", () => {
+            var a = Component(1, "A", 0, 0); var b = Component(2, "B", 0, 80);
+            var s = Make(new[] { a, b }, Wire(a, b));
+            s.Outbound = new[] { new ExternalOutbound { Node = b.Id, TargetGripX = 95 } };
+            var r = Solve(s);
+            Near(r.Tops[a.Id].X, -115, "unprotected clearance moved the island");
+            Near(95 - (r.Tops[b.Id].X + b.Width), 0, "tier-1-only stop");
+            Guarantees(s, r); Recognized(s, r);
+        });
+        Check("Clearance: whole pivots near both thresholds use actual grip arithmetic", () => {
+            foreach (bool inbound in new[] { false, true })
+                foreach (double margin in new[] { 0.0, 20.0 })
+                    foreach (double epsilon in new[] { -1e-10, 0, 1e-10 })
+                    {
+                        var a = Component(1, "A", inbound ? 500 : 0, 0);
+                        var b = Component(2, "B", 0, 80);
+                        a.PivotOffset = new Vec2(12.25, 7); b.PivotOffset = new Vec2(12.25, 7);
+                        var s = Make(new[] { a, b }, Wire(a, b));
+                        double outside = (inbound ? 300.75 : 200.75) + epsilon;
+                        if (inbound)
+                        {
+                            if (margin == 0) a.CurrentTop = new Vec2(outside + 5, 0);
+                            s.Inbound = new[] { new ExternalInbound { Node = a.Id, SourceGripX = outside } };
+                        }
+                        else
+                        {
+                            if (margin == 0) b.CurrentTop = new Vec2(outside - b.Width - 5, 80);
+                            s.Outbound = new[] { new ExternalOutbound { Node = b.Id, TargetGripX = outside } };
+                        }
+                        var r = Solve(s);
+                        double slack = inbound ? r.Tops[a.Id].X + a.Inputs[0].X - outside
+                            : outside - (r.Tops[b.Id].X + b.Outputs[0].X);
+                        Assert(slack >= margin && slack < margin + 1 + 1e-8, "rounded stop missed its tier threshold");
+                        Assert(BoundaryCounts(s, r).Created == 0 && LostClearance(s, r) == 0, "rounded threshold violated");
+                        Guarantees(s, r); Recognized(s, r);
+                    }
         });
         Check("Column windows: satisfied boundaries preserve today's output exactly, including fractional geometry", () => {
             var s = RandomDag(30011); var legacy = Solve(s);
@@ -222,17 +317,17 @@ internal static partial class Program
             var c = Component(3, "C", 0, 200); var d = Component(4, "D", 0, 280);
             var s = Make(new[] { a, b, c, d }, Wire(a, b), Wire(c, d));
             // B's current output is 90 <= 200. Packed B would output 210,
-            // so A-B must slide left 10. C-D has no crossing constraint.
+            // so A-B must slide left 30 to retain 20 px clearance. C-D has no crossing constraint.
             s.Outbound = new[] { new ExternalOutbound { Node = b.Id, TargetGripX = 200 } };
             var first = Solve(s);
-            Near(first.Tops[a.Id].X, -10, "required first slide");
-            Near(first.Tops[b.Id].X, 110, "first consumer position");
+            Near(first.Tops[a.Id].X, -30, "required first slide");
+            Near(first.Tops[b.Id].X, 90, "first consumer position");
             Near(first.Tops[c.Id].X, 0, "unconstrained island's zero movement");
             Near(first.Tops[d.Id].X, 120, "first unconstrained output");
             Assert(BoundaryCounts(s, first).Created == 0, "first plan broke the forward wire");
             var applied = Applied(s, first);
             var second = Solve(applied);
-            Near(second.Tops[a.Id].X, -10, "required island stays");
+            Near(second.Tops[a.Id].X, -30, "required island stays");
             Near(second.Tops[c.Id].X, 0, "other island keeps its own anchor");
             Near(second.Tops[d.Id].X, 120, "second unconstrained output");
             Assert(BoundaryCounts(applied, second).Created == 0, "second plan broke the forward wire");
@@ -256,7 +351,7 @@ internal static partial class Program
                 new ExternalInbound { Node = b.Id, SourceGripX = 450 } };
             s.Outbound = new[] { new ExternalOutbound { Node = d.Id, TargetGripX = 210 } };
             var r = Solve(s);
-            Near(r.Tops[a.Id].X, 300, "minimum required island slide"); Near(r.Tops[c.Id].X, 0, "held envelope");
+            Near(r.Tops[a.Id].X, 320, "minimum required island slide"); Near(r.Tops[c.Id].X, -20, "held envelope");
             Near(r.Tops[b.Id].X - r.Tops[a.Id].X, 120, "free repair stretched a gap");
             Assert(BoundaryCounts(s, r).After == 1, "return wire added island movement"); Guarantees(s, r);
         });
@@ -270,8 +365,8 @@ internal static partial class Program
                 new ExternalInbound { Node = b.Id, SourceGripX = 300 },
                 new ExternalInbound { Node = d.Id, SourceGripX = 300 } };
             var r = Solve(s);
-            Near(r.Tops.Values.Min(t => t.X), 100, "remaining wires moved the envelope");
-            Near(r.Tops[a.Id].X, 100, "first island minimum slide"); Near(r.Tops[c.Id].X, 100, "second island minimum slide");
+            Near(r.Tops.Values.Min(t => t.X), 120, "remaining wires moved the envelope");
+            Near(r.Tops[a.Id].X, 120, "first island minimum slide"); Near(r.Tops[c.Id].X, 120, "second island minimum slide");
             var counts = BoundaryCounts(s, r);
             Assert(counts.Created == 0 && counts.After == 2, "return wires added island movement"); Guarantees(s, r);
         });
@@ -329,15 +424,16 @@ internal static partial class Program
             Assert(Graph.TryCreate(s, out _, out _), "finite X rejected");
         });
         Check("Column windows: 700 random DAGs, fixed points, caps, legacy comparison and determinism", () => {
-            int legacyCreated = 0, windowsCreated = 0;
+            int legacyCreated = 0, windowsCreated = 0, packedLost = 0, windowsLost = 0;
             int multipleIslands = 0, multipleOutsideIslands = 0;
+            var noOutsideResults = new System.Text.StringBuilder();
             for (int i = 0; i < 700; i++)
             {
                 int seed = 30011 + i * 7919;
                 try
                 {
                     var s = RandomDag(seed); var random = new Random(seed);
-                    var legacy = Solve(s);
+                    var legacy = Solve(s); RecordNoOutside(noOutsideResults, legacy);
                     foreach (var e in s.Outbound) { e.TargetGripX = random.Next(-200, 1800) + random.Next(4) * .25; e.TargetObjectId = Id(500); }
                     foreach (var e in s.Inbound) { e.SourceGripX = random.Next(-200, 1800) + random.Next(4) * .25; e.SourceObjectId = Id(501); }
                     Assert(Graph.TryCreate(s, out var inputGraph, out var inputDiagnostic), inputDiagnostic);
@@ -349,6 +445,10 @@ internal static partial class Program
                     var oldCounts = BoundaryCounts(s, legacy); var newCounts = BoundaryCounts(s, r);
                     Assert(newCounts.Created <= oldCounts.Created, "created more backward wires: " + oldCounts.Created + " -> " + newCounts.Created);
                     legacyCreated += oldCounts.Created; windowsCreated += newCounts.Created;
+                    int oldLost = LostClearance(s, legacy), newLost = LostClearance(s, r);
+                    Assert(newCounts.Created < oldCounts.Created || newLost <= oldLost,
+                        "per-scene lost-clearance increase: " + oldLost + " -> " + newLost + " created: " + newCounts.Created + "/" + oldCounts.Created);
+                    packedLost += oldLost; windowsLost += newLost;
                     var applied = Applied(s, r);
                     Assert(Graph.TryCreate(applied, out var graph, out var diagnostic), diagnostic);
                     Assert(FixedPoint.TryMatch(graph, new Vec2(applied.Nodes.Min(n => n.CurrentTop.X), applied.Nodes.Min(n => n.CurrentTop.Y)),
@@ -378,13 +478,17 @@ internal static partial class Program
                 }
                 catch (Exception e) { throw new Exception("seed " + seed + ": " + e.Message); }
             }
+            Assert(NoOutsideHash(noOutsideResults) == "35680BE785965B9A9B95AFEF985323D70438863C276FC8B59BC141F9F6A07BE3",
+                "no-outside-X output differs from deebe27 (700 random scenes)");
             Assert(multipleOutsideIslands >= 70, "too few scenes exercise outside X in multiple islands");
             Console.WriteLine("Column windows created backward wires: " + legacyCreated + " -> " + windowsCreated + " across 700 seeded scenes");
+            Console.WriteLine("Column windows lost clearance: " + packedLost + " -> " + windowsLost);
             Console.WriteLine("Column windows multi-island coverage: " + multipleIslands + " scenes; " + multipleOutsideIslands + " with outside X in multiple islands");
         });
         Check("Column windows: 700 distinct-left multi-island scenes, mixed X, alignment and rounding", () => {
-            int packedCreated = 0, windowsCreated = 0;
+            int packedCreated = 0, windowsCreated = 0, packedLost = 0, windowsLost = 0;
             int noOutside = 0, mixedOutside = 0, allOutside = 0, groupColumns = 0, indentedColumns = 0;
+            var noOutsideResults = new System.Text.StringBuilder();
             for (int scene = 0; scene < 700; scene++)
             {
                 int seed = 164634 + scene * 7919;
@@ -425,7 +529,7 @@ internal static partial class Program
                         inbound.Add(new ExternalInbound { Node = ns[0].Id, SourceGripX = left + 3000 });
                     }
                     var s = Make(nodes.ToArray(), edges.ToArray());
-                    var packed = Solve(s); Guarantees(s, packed); Recognized(s, packed);
+                    var packed = Solve(s); RecordNoOutside(noOutsideResults, packed); Guarantees(s, packed); Recognized(s, packed);
                     foreach (var island in members)
                         Near(island.Min(n => packed.Tops[n.Id].X), ColumnWindows.OldLeft(island), "packed island old left", .5);
                     s.Inbound = inbound.ToArray(); s.Outbound = outbound.ToArray();
@@ -433,6 +537,9 @@ internal static partial class Program
                     var baseline = BoundaryCounts(s, packed); var actual = BoundaryCounts(s, r);
                     Assert(actual.Created <= baseline.Created, "per-scene created-wire increase");
                     packedCreated += baseline.Created; windowsCreated += actual.Created;
+                    int oldLost = LostClearance(s, packed), newLost = LostClearance(s, r);
+                    Assert(actual.Created < baseline.Created || newLost <= oldLost, "per-scene lost-clearance increase: " + oldLost + " -> " + newLost + " created: " + actual.Created + "/" + baseline.Created);
+                    packedLost += oldLost; windowsLost += newLost;
                     foreach (var island in members.Where(ns => !inbound.Any(e => ns.Any(n => n.Id == e.Node)) &&
                         !outbound.Any(e => ns.Any(n => n.Id == e.Node))))
                         foreach (var n in island) Near(r.Tops[n.Id].X, packed.Tops[n.Id].X, "outside X in another island changed X");
@@ -442,8 +549,11 @@ internal static partial class Program
                 }
                 catch (Exception e) { throw new Exception("seed " + seed + ": " + e.Message); }
             }
+            Assert(NoOutsideHash(noOutsideResults) == "52596B0757C95B97C26FBAB9CDE9E77770982FB80336850A9034C7D0075861C3",
+                "no-outside-X output differs from deebe27 (700 distinct-left scenes)");
             Assert(groupColumns > 0 && indentedColumns > 0, "missing alignment coverage");
             Console.WriteLine("Distinct-left created backward wires: " + packedCreated + " -> " + windowsCreated + " across 700 seeded scenes");
+            Console.WriteLine("Distinct-left lost clearance: " + packedLost + " -> " + windowsLost);
             Console.WriteLine("Distinct-left coverage: " + noOutside + " without outside X; " + mixedOutside +
                 " with outside X on one island only; " + allOutside + " with X on every island; " + groupColumns +
                 " pure-group islands; " + indentedColumns + " indented islands");
