@@ -173,13 +173,18 @@ namespace HopperFormat
                             if (port < 0) throw new InvalidOperationException($"Cannot resolve output port of '{Label(owner)}'");
                             edges.Add(new Edge { From = owner.InstanceGuid, FromPort = port, To = obj.InstanceGuid, ToPort = q });
                         }
-                        else inbound.Add(new ExternalInbound { Node = obj.InstanceGuid, Port = q, SourceGripY = source.Attributes.OutputGrip.Y });
+                        else inbound.Add(new ExternalInbound { Node = obj.InstanceGuid, Port = q, SourceGripY = source.Attributes.OutputGrip.Y,
+                            SourceGripX = source.Attributes.OutputGrip.X, SourceObjectId = owner.InstanceGuid });
                     }
                 var outputs = Outputs(obj);
                 for (int p = 0; p < outputs.Length; p++)
                     foreach (var recipient in outputs[p].Recipients)
-                        if (!nodeIds.Contains(Owner(recipient).InstanceGuid))
-                            outbound.Add(new ExternalOutbound { Node = obj.InstanceGuid, Port = p, TargetGripY = recipient.Attributes.InputGrip.Y });
+                    {
+                        var owner = Owner(recipient);
+                        if (!nodeIds.Contains(owner.InstanceGuid))
+                            outbound.Add(new ExternalOutbound { Node = obj.InstanceGuid, Port = p, TargetGripY = recipient.Attributes.InputGrip.Y,
+                                TargetGripX = recipient.Attributes.InputGrip.X, TargetObjectId = owner.InstanceGuid });
+                    }
             }
             capture.Snapshot = new Snapshot { Nodes = nodes, Edges = edges, Inbound = inbound, Outbound = outbound, Options = options };
             if (capture.ContainsGroups)

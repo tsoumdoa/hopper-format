@@ -18,6 +18,37 @@ internal static class SessionTests
 
     internal static int Run(Form form)
     {
+        Check(form, "Backward log is always visible; zero created preserves status and pill", f =>
+        {
+            f.Session.Run();
+            Assert(f.Session.Log(false).Contains("Backward wires: 1 -> 0") && !f.Session.Status.Contains("new backward")
+                && PillText(f) == f.Session.Status, "backward log missing or zero suffix changed");
+            f.Session.Run();
+            Assert(f.Session.Log(false).Contains("Backward wires: 0 -> 0") && f.Session.Status == "Already formatted"
+                && PillText(f) == "Already formatted" && f.Document.UndoUtil.Records.Count == 1, "no-op changed status/undo");
+        });
+        Check(form, "Created backward wire appears in log, status and pill for selection and groups", f =>
+        {
+            var outside = new TestComponent(1, 0) { InitialPivot = new PointF(190, 100) };
+            // The second component moves from x=30 to the second column, past this consumer.
+            f.Second.Params.Output.Add(new TestParam { Owner = f.Second, Kind = GH_ParamKind.output });
+            TestParam.Connect(f.Second.Params.Output[0], outside.Params.Input[0]);
+            f.Document.Objects.Add(outside);
+            foreach (bool groups in new[] { false, true })
+            {
+                if (groups)
+                {
+                    foreach (var pair in f.Document.UndoUtil.Records[0].Before)
+                    { pair.Key.Attributes.Pivot = pair.Value; pair.Key.Attributes.PerformLayout(); }
+                    var g = new GH_Group(); g.ObjectIDs.AddRange(new[] { f.First.InstanceGuid, f.Second.InstanceGuid });
+                    f.Document.Objects.Add(g); f.Document.Selection.Clear(); f.Document.Selection.Add(g);
+                }
+                f.Session.Run();
+                Assert(f.Session.Log(false).Contains("Backward wires: 1 -> 1 (1 new)")
+                    && f.Session.Status.EndsWith(" · 1 new backward wire(s)") && PillText(f) == f.Session.Status,
+                    "created count missing: " + string.Join(";", f.Session.Log(false)));
+            }
+        });
         Check(form, "Flat overlapping selection formats normally and records Format selection", f =>
         {
             var extraA = new TestComponent(); var extraB = new TestComponent();

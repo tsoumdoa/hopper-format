@@ -71,9 +71,13 @@ internal static class HostAdapterTests
             Assert(snapshot.Edges.Count == 3 && snapshot.Edges.Any(e => e.From == a.InstanceGuid && e.FromPort == 1
                 && e.To == b.InstanceGuid && e.ToPort == 0), "internal edges were duplicated or port indices lost");
             Assert(snapshot.Inbound.Count == 1 && snapshot.Inbound[0].Node == b.InstanceGuid
+                && snapshot.Inbound[0].SourceGripX == externalSource.Params.Output[0].Attributes.OutputGrip.X
+                && snapshot.Inbound[0].SourceObjectId == externalSource.InstanceGuid
                 && snapshot.Inbound[0].SourceGripY == externalSource.Params.Output[0].Attributes.OutputGrip.Y
                 && snapshot.Outbound.Count == 2 && snapshot.Outbound.Any(e => e.Node == b.InstanceGuid
-                    && e.Port == 1 && e.TargetGripY == externalTarget.Params.Input[1].Attributes.InputGrip.Y), "external hints incorrect");
+                    && e.Port == 1 && e.TargetGripY == externalTarget.Params.Input[1].Attributes.InputGrip.Y
+                    && e.TargetGripX == externalTarget.Params.Input[1].Attributes.InputGrip.X
+                    && e.TargetObjectId == externalTarget.InstanceGuid), "external hints incorrect");
             var result = LayoutSolver.Solve(snapshot);
             Assert(result.Success, result.Diagnostic);
             var capture = SelectionSnapshot.Capture(document, options);

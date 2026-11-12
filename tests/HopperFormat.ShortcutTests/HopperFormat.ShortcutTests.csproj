@@ -12,6 +12,7 @@
     <ProjectReference Include="ComponentHarness/HopperFormat.ComponentHarness.csproj" Aliases="componentHarness" />
     <Compile Include="../../CanvasShortcutHook.cs" Link="CanvasShortcutHook.cs" />
     <Compile Include="../../FormatAllCapture.cs" Link="FormatAllCapture.cs" />
+    <Compile Include="../../BackwardWireCapture.cs" Link="BackwardWireCapture.cs" />
     <Compile Include="../../SelectionSnapshot.cs" Link="SelectionSnapshot.cs" />
     <Compile Include="../../FormatApplier.cs" Link="FormatApplier.cs" />
     <Compile Include="../../GroupMembership.cs" Link="GroupMembership.cs" />
