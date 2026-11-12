@@ -300,7 +300,7 @@ namespace HopperFormat.Layout
                 {
                     var anchor = originalUnits.Length == 0 ? new Vec2(0, 0) :
                         new Vec2(originalUnits.Min(b => b.X), originalUnits.Min(b => b.Y));
-                    SolveLevel(units, anchor, "Selection");
+                    SolveLevel(units, anchor, "Selection", true);
                 }
                 RefreshBoxes();
                 LogNoteOverlaps();
@@ -335,7 +335,9 @@ namespace HopperFormat.Layout
                     var labelIds = new HashSet<Guid>(LayoutChildren(g).Where(SeeThrough).SelectMany(c => members[c.Id]));
                     var units = UniqueUnits(direct.Where(id => nodes.ContainsKey(id) && !labelIds.Contains(id)).Select(id => NodeUnit(nodes[id]))
                         .Concat(LayoutChildren(g).Select(GroupUnit)));
-                    SolveLevel(units, new Vec2(before.X, before.Y), g.Label);
+                    SolveLevel(units, new Vec2(before.X, before.Y), g.Label,
+                        snapshot.Groups.Count == 1 && snapshot.Groups[0].Id == g.Id &&
+                        !snapshot.LooseNodes.Any(n => !members[g.Id].Contains(n.Id)));
                     var after = Envelope(direct.Where(nodes.ContainsKey).Select(ObjectBox)
                         .Concat(children.Select(c => boxes[c.Id])));
                     double growthX = Math.Max(0, Math.Ceiling(after.Right - before.Right - 1e-7)),
@@ -414,7 +416,7 @@ namespace HopperFormat.Layout
                 var g = input ? nodes[id].Inputs[port] : nodes[id].Outputs[port];
                 return new Vec2(tops[id].X + g.X - relative.X, tops[id].Y + g.Y - relative.Y);
             }
-            private void SolveLevel(Unit[] units, Vec2 anchor, string label)
+            private void SolveLevel(Unit[] units, Vec2 anchor, string label, bool fixedFrame)
             {
                 if (units.Length == 0) return;
                 var owner = new Dictionary<Guid, Unit>();
@@ -431,21 +433,30 @@ namespace HopperFormat.Layout
                     if (from && to && a != b) edges.Add(new Edge { From = a.Node.Id, To = b.Node.Id,
                         FromPort = Port(a, e.From, e.FromPort, false), ToPort = Port(b, e.To, e.ToPort, true) });
                     else if (from && !to) outbound.Add(new ExternalOutbound { Node = a.Node.Id, Port = Port(a, e.From, e.FromPort, false),
-                        TargetGripY = tops[e.To].Y + nodes[e.To].Inputs[e.ToPort].Y });
+                        TargetGripY = tops[e.To].Y + nodes[e.To].Inputs[e.ToPort].Y, TargetObjectId = e.To });
                     else if (!from && to) inbound.Add(new ExternalInbound { Node = b.Node.Id, Port = Port(b, e.To, e.ToPort, true),
-                        SourceGripY = tops[e.From].Y + nodes[e.From].Outputs[e.FromPort].Y });
+                        SourceGripY = tops[e.From].Y + nodes[e.From].Outputs[e.FromPort].Y, SourceObjectId = e.From });
                 }
                 inbound.AddRange(snapshot.Inbound.Where(e => owner.ContainsKey(e.Node)).Select(e => new ExternalInbound {
-                    Node = owner[e.Node].Node.Id, Port = Port(owner[e.Node], e.Node, e.Port, true), SourceGripY = e.SourceGripY }));
+                    Node = owner[e.Node].Node.Id, Port = Port(owner[e.Node], e.Node, e.Port, true), SourceGripY = e.SourceGripY,
+                    SourceGripX = fixedFrame ? e.SourceGripX : null, SourceObjectId = e.SourceObjectId }));
                 outbound.AddRange(snapshot.Outbound.Where(e => owner.ContainsKey(e.Node)).Select(e => new ExternalOutbound {
-                    Node = owner[e.Node].Node.Id, Port = Port(owner[e.Node], e.Node, e.Port, false), TargetGripY = e.TargetGripY }));
-                var result = LayoutSolver.Solve(new Snapshot { Nodes = units.Select(u => u.Node).ToArray(), Edges = edges,
-                    Inbound = inbound, Outbound = outbound, Options = snapshot.Options });
+                    Node = owner[e.Node].Node.Id, Port = Port(owner[e.Node], e.Node, e.Port, false), TargetGripY = e.TargetGripY,
+                    TargetGripX = fixedFrame ? e.TargetGripX : null, TargetObjectId = e.TargetObjectId }));
+                var level = new Snapshot { Nodes = units.Select(u => u.Node).ToArray(), Edges = edges,
+                    Inbound = inbound, Outbound = outbound, Options = snapshot.Options };
+                var result = LayoutSolver.Solve(level);
                 if (!result.Success) throw new InvalidOperationException(label + ": contracted graph: " + result.Diagnostic);
                 unstable |= result.Unstable; rounds = Math.Max(rounds, result.Rounds);
                 log.AddRange(result.Log.Select(line => label + ": " + line));
                 notices.AddRange(result.Notices.Select(line => label + ": " + line));
-                double dx = LayoutSolver.Round(anchor.X - result.Tops.Values.Min(t => t.X)),
+                bool windows = fixedFrame && (inbound.Any(e => Graph.Finite(e.SourceGripX)) || outbound.Any(e => Graph.Finite(e.TargetGripX)));
+                // A shared correction would couple independently anchored islands
+                // after child growth. Keep legacy anchoring for a single island
+                // and the all-unconnected column; otherwise trust LayoutSolver X.
+                Graph.TryCreate(level, out var levelGraph, out _);
+                bool independentIslands = edges.Count > 0 && Ranking.Assign(levelGraph, out _).Count > 1;
+                double dx = windows || independentIslands ? 0 : LayoutSolver.Round(anchor.X - result.Tops.Values.Min(t => t.X)),
                     dy = LayoutSolver.Round(anchor.Y - result.Tops.Values.Min(t => t.Y));
                 foreach (var u in units)
                 {

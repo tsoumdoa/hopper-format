@@ -6,6 +6,16 @@ namespace HopperFormat.Layout
 {
     internal static class Ranking
     {
+        // X can change independently in each island. It must never break a
+        // vertical ordering tie or choose which connected island owns orphans.
+        private static int CompareIslands(List<Node> a, List<Node> b)
+        {
+            double ay = a.Min(n => n.CurrentTop.Y), by = b.Min(n => n.CurrentTop.Y);
+            int c = ay.CompareTo(by);
+            return c != 0 ? c : a.Where(n => n.CurrentTop.Y == ay).Min(n => n.Id)
+                .CompareTo(b.Where(n => n.CurrentTop.Y == by).Min(n => n.Id));
+        }
+
         private static bool ParamLike(Node n) => n.Kind == NodeKind.Param || n.ParamRole;
         internal static List<List<Node>> Assign(Graph graph, out Dictionary<Guid, int> ranks, bool recoverColumns = false)
         {
@@ -72,7 +82,7 @@ namespace HopperFormat.Layout
             }
             islands.Sort((a, b) => {
                 int c = b.Count.CompareTo(a.Count);
-                return c != 0 ? c : Graph.CompareNodes(a[0], b[0]);
+                return c != 0 ? c : CompareIslands(a, b);
             });
             var main = islands[0];
             foreach (var orphan in orphans)
@@ -103,7 +113,7 @@ namespace HopperFormat.Layout
             main.AddRange(orphans);
             main.Sort(Graph.CompareNodes);
             var rest = islands.Skip(1).ToList();
-            rest.Sort((a, b) => Graph.CompareNodes(a[0], b[0]));
+            rest.Sort((a, b) => CompareIslands(a, b));
             return new[] { main }.Concat(rest).ToList();
         }
     }

@@ -15,6 +15,7 @@ namespace HopperFormat.Layout
         internal Dictionary<Guid, List<Edge>> In, Out;
         internal HashSet<Guid> Returns;
         internal List<Node> Topological;
+        internal Dictionary<Guid, double> WindowTops;
 
         internal static int CompareNodes(Node a, Node b)
         {
@@ -24,6 +25,7 @@ namespace HopperFormat.Layout
         }
 
         internal static bool Finite(double value) { return !double.IsNaN(value) && !double.IsInfinity(value); }
+        internal static bool Finite(double? value) { return value.HasValue && Finite(value.Value); }
         private static string MessageLabel(Node node) => node.Kind == NodeKind.Group ? node.Label : "'" + node.Label + "'";
         private static bool Finite(Vec2 value) { return Finite(value.X) && Finite(value.Y); }
 
@@ -68,13 +70,15 @@ namespace HopperFormat.Layout
             foreach (var external in snapshot.Inbound.OrderBy(e => e.Node).ThenBy(e => e.Port).ThenBy(e => e.SourceGripY))
             {
                 if (!byId.ContainsKey(external.Node)) return Fail("An external inbound refers to a missing node.", out diagnostic);
-                if (external.Port < 0 || external.Port >= byId[external.Node].Inputs.Length || !Finite(external.SourceGripY))
+                if (external.Port < 0 || external.Port >= byId[external.Node].Inputs.Length || !Finite(external.SourceGripY) ||
+                    external.SourceGripX.HasValue && double.IsInfinity(external.SourceGripX.Value))
                     return Fail("Bad external input port or grip for " + MessageLabel(byId[external.Node]) + ".", out diagnostic);
             }
             foreach (var external in snapshot.Outbound.OrderBy(e => e.Node).ThenBy(e => e.Port).ThenBy(e => e.TargetGripY))
             {
                 if (!byId.ContainsKey(external.Node)) return Fail("An external outbound refers to a missing node.", out diagnostic);
-                if (external.Port < 0 || external.Port >= byId[external.Node].Outputs.Length || !Finite(external.TargetGripY))
+                if (external.Port < 0 || external.Port >= byId[external.Node].Outputs.Length || !Finite(external.TargetGripY) ||
+                    external.TargetGripX.HasValue && double.IsInfinity(external.TargetGripX.Value))
                     return Fail("Bad external output port or grip for " + MessageLabel(byId[external.Node]) + ".", out diagnostic);
             }
             var g = new Graph { Nodes = nodes, Edges = edges, Snapshot = snapshot, Options = options, ById = byId,

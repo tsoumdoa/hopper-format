@@ -4,7 +4,7 @@ using System.Globalization;
 using System.Linq;
 using HopperFormat.Layout;
 
-internal static class Program
+internal static partial class Program
 {
     private static int failures;
 
@@ -61,7 +61,8 @@ internal static class Program
     {
         return new Snapshot { Nodes = snapshot.Nodes.Select(n => new Node { Id = n.Id, Label = n.Label,
             CurrentTop = result.Tops[n.Id], PivotOffset = n.PivotOffset, Width = n.Width, Height = n.Height,
-            Kind = n.Kind, Widget = n.Widget, Inputs = n.Inputs, Outputs = n.Outputs }).ToArray(), Edges = snapshot.Edges,
+            Kind = n.Kind, Widget = n.Widget, ParamRole = n.ParamRole, AlignRight = n.AlignRight,
+            Inputs = n.Inputs, Outputs = n.Outputs }).ToArray(), Edges = snapshot.Edges,
             Inbound = snapshot.Inbound, Outbound = snapshot.Outbound, Options = snapshot.Options };
     }
 
@@ -106,7 +107,8 @@ internal static class Program
         if (snapshot.Nodes.Count == 0) return;
         Near(result.Anchor.X, snapshot.Nodes.Min(n => n.CurrentTop.X), "reported anchor X");
         Near(result.Anchor.Y, snapshot.Nodes.Min(n => n.CurrentTop.Y), "reported anchor Y");
-        Near(result.Tops.Values.Min(t => t.X), result.Anchor.X, "placed anchor X", 1);
+        if (!snapshot.Inbound.Any(e => Graph.Finite(e.SourceGripX)) && !snapshot.Outbound.Any(e => Graph.Finite(e.TargetGripX)))
+            Near(result.Tops.Values.Min(t => t.X), result.Anchor.X, "placed anchor X", 1);
         Near(result.Tops.Values.Min(t => t.Y), result.Anchor.Y, "placed anchor Y", 1);
     }
 
@@ -396,7 +398,7 @@ internal static class Program
             Assert(Solve(Applied(snapshot, result)).Ranks[panel.Id] == 2, "wide orphan drifted to another column");
             Guarantees(snapshot, result);
         });
-        Check("Two islands: largest first, independent return ranks and left alignment", () => {
+        Check("Two islands: largest first, independent return ranks and own left edges", () => {
             var a = Component(1, "Main A", 200, 500); var b = Component(2, "Main B", 450, 700);
             var c = Component(3, "Main C", 700, 600); var x = Component(4, "Small X", -50, -100);
             var y = Component(5, "Small Y", 10, -50);
@@ -406,7 +408,7 @@ internal static class Program
             Assert(result.Ranks[y.Id] == 1, "small island inherited main max rank");
             double mainBottom = new[] { a, b, c }.Max(n => result.Tops[n.Id].Y + n.Height);
             Near(new[] { x, y }.Min(n => result.Tops[n.Id].Y) - mainBottom, 32, "island gap");
-            Near(result.Tops[a.Id].X, -50, "main left"); Near(result.Tops[x.Id].X, -50, "small left");
+            Near(result.Tops[a.Id].X, 200, "main left"); Near(result.Tops[x.Id].X, -50, "small left");
             Guarantees(snapshot, result);
         });
         Check("Main island ties and remaining islands follow original top order", () => {
@@ -908,11 +910,13 @@ internal static class Program
         return result;
     }
 
-    private static void Main()
+    private static void Main(string[] args)
     {
-        GoldenTests(); BalanceTests(); OrderingTests(); ValidationTests(); RandomTests();
+        if (args.Contains("--format-all-wires")) { Environment.ExitCode = FormatAllWireTests.Run(); return; }
+        GoldenTests(); BalanceTests(); OrderingTests(); ValidationTests(); BackwardWireTests(); RandomTests();
         failures += HierarchyTests.Run();
         failures += FormatAllTests.Run();
+        failures += FormatAllWireTests.Run();
         Environment.ExitCode = failures == 0 ? 0 : 1;
     }
 }

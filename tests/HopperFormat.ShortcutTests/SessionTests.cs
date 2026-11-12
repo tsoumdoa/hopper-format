@@ -18,6 +18,60 @@ internal static class SessionTests
 
     internal static int Run(Form form)
     {
+        Check(form, "Backward log is always visible; zero created preserves status and pill", f =>
+        {
+            f.Session.Run();
+            Assert(f.Session.Log(false).Contains("Backward wires: 1 -> 0") && !f.Session.Status.Contains("new backward")
+                && PillText(f) == f.Session.Status, "backward log missing or zero suffix changed");
+            f.Session.Run();
+            Assert(f.Session.Log(false).Contains("Backward wires: 0 -> 0") && f.Session.Status == "Already formatted"
+                && PillText(f) == "Already formatted" && f.Document.UndoUtil.Records.Count == 1, "no-op changed status/undo");
+        });
+        Check(form, "No-move selection and group runs retain a backward boundary wire", f =>
+        {
+            f.First.Params.Input.Add(new TestParam { Owner = f.First, Kind = GH_ParamKind.input });
+            var outside = new TestComponent(0, 1) { InitialPivot = new PointF(3000, 100) };
+            TestParam.Connect(outside.Params.Output[0], f.First.Params.Input[0]);
+            f.Document.Objects.Add(outside);
+            f.Session.Run();
+            Assert(f.Session.Log(false).Contains("Backward wires: 2 -> 1"), "first run lost boundary wire");
+            foreach (bool group in new[] { false, true })
+            {
+                if (group)
+                {
+                    var g = new GH_Group { Document = f.Document };
+                    g.ObjectIDs.AddRange(new[] { f.First.InstanceGuid, f.Second.InstanceGuid });
+                    f.Document.Objects.Add(g); f.Document.Selection.Clear(); f.Document.Selection.Add(g);
+                    f.Session.Run(); // Establish the group's layout before checking its no-op.
+                }
+                f.Session.Run();
+                Assert(f.Session.LastMoves == 0 && f.Session.Log(false).Contains("Backward wires: 1 -> 1"),
+                    "no-op lost remaining boundary wire");
+            }
+        });
+        Check(form, "Column windows avoid the backward boundary wire for selection and groups", f =>
+        {
+            var outside = new TestComponent(1, 0) { InitialPivot = new PointF(190, 100) };
+            // Packing at the old left would move the second column past this consumer.
+            f.Second.Params.Output.Add(new TestParam { Owner = f.Second, Kind = GH_ParamKind.output });
+            TestParam.Connect(f.Second.Params.Output[0], outside.Params.Input[0]);
+            f.Document.Objects.Add(outside);
+            foreach (bool groups in new[] { false, true })
+            {
+                if (groups)
+                {
+                    foreach (var pair in f.Document.UndoUtil.Records[0].Before)
+                    { pair.Key.Attributes.Pivot = pair.Value; pair.Key.Attributes.PerformLayout(); }
+                    var g = new GH_Group(); g.ObjectIDs.AddRange(new[] { f.First.InstanceGuid, f.Second.InstanceGuid });
+                    f.Document.Objects.Add(g); f.Document.Selection.Clear(); f.Document.Selection.Add(g);
+                }
+                f.Session.Run();
+                Assert(f.Session.Log(false).Contains("Backward wires: 1 -> 0")
+                    && !f.Session.Status.Contains("new backward") && PillText(f) == f.Session.Status,
+                    "window failed: " + string.Join(";", f.Session.Log(false)));
+                f.Session.Run(); Assert(f.Session.LastMoves == 0, "boundary format moved on repeat");
+            }
+        });
         Check(form, "Flat overlapping selection formats normally and records Format selection", f =>
         {
             var extraA = new TestComponent(); var extraB = new TestComponent();
@@ -29,6 +83,57 @@ internal static class SessionTests
             Assert(f.Session.Status.StartsWith("Formatted selection") && f.Session.LastMoves > 0
                 && f.Document.UndoUtil.Records.Single().Name == "Format selection" && extraA.Attributes == null && extraB.Attributes == null,
                 "flat selection was refused by unrelated ownership");
+        });
+        Check(form, "Format-all backward metric counts cross-group wires once using both final displacements", f =>
+        {
+            f.Second.InitialPivot = new PointF(200, 250);
+            f.First.Params.Input.Add(new TestParam { Owner = f.First, Kind = GH_ParamKind.input });
+            var a = new TestComponent(0, 1) { InitialPivot = new PointF(0, 80) };
+            var b = new TestComponent(1, 1) { InitialPivot = new PointF(40, 80) };
+            var c = new TestComponent(0, 1) { InitialPivot = new PointF(150, 250) };
+            TestParam.Connect(a.Params.Output[0], b.Params.Input[0]);
+            TestParam.Connect(b.Params.Output[0], f.First.Params.Input[0]);
+            TestParam.Connect(c.Params.Output[0], f.Second.Params.Input[0]);
+            var ga = new GH_Group { Document = f.Document }; var gb = new GH_Group { Document = f.Document };
+            ga.ObjectIDs.AddRange(new[] { a.InstanceGuid, b.InstanceGuid, f.First.InstanceGuid });
+            gb.ObjectIDs.AddRange(new[] { c.InstanceGuid, f.Second.InstanceGuid });
+            f.Document.Objects.AddRange(new IGH_DocumentObject[] { a, b, c, ga, gb });
+            f.Session.RunAll();
+            Assert(f.First.Attributes.Pivot.X != f.First.InitialPivot.X && f.Second.Attributes.Pivot.X != f.Second.InitialPivot.X,
+                "both cross-group endpoints must move horizontally");
+            Assert(f.Session.Log(false).Contains("Backward wires: 3 -> 0") &&
+                !f.Session.Status.Contains("new backward") && PillText(f) == f.Session.Status,
+                "cross-group metric lost or duplicated a wire: " + string.Join(";", f.Session.Log(false)));
+            f.Session.RunAll();
+            Assert(f.Session.Status == "Formatted all groups · 0 moves" && f.Session.Log(false).Contains("Backward wires: 0 -> 0") &&
+                f.Document.UndoUtil.Records.Count == 1 && PillText(f) == f.Session.Status, "format-all no-op changed: " + string.Join(";", f.Session.Log(false)));
+        });
+        Check(form, "FF format all moves a loose satellite in the single undo record and repeats without moves", f =>
+        {
+            f.Document.Objects.Clear(); f.Document.Selection.Clear();
+            var chain = Enumerable.Range(0, 4).Select(i => new TestComponent(1, 1) {
+                InitialPivot = new PointF(new[] { 0, 200, 400, 700 }[i], 100) }).ToArray();
+            for (int i = 1; i < chain.Length; i++) TestParam.Connect(chain[i - 1].Params.Output[0], chain[i].Params.Input[0]);
+            var loose = new TestParam { InitialPivot = new PointF(560, 0) };
+            var unrelated = new TestComponent { InitialPivot = new PointF(2000, 0) };
+            TestParam.Connect(loose, chain[3].Params.Input[0]);
+            var group = new GH_Group { Document = f.Document };
+            group.ObjectIDs.AddRange(chain.Select(n => n.InstanceGuid));
+            f.Document.Objects.AddRange(chain.Cast<IGH_DocumentObject>().Concat(new IGH_DocumentObject[] { loose, unrelated, group }));
+            Tap(f.Canvas); Tap(f.Canvas);
+            Assert(loose.Attributes.Pivot.X < loose.InitialPivot.X && unrelated.Attributes.Pivot == unrelated.InitialPivot,
+                "satellite did not follow or non-satellite moved");
+            Assert(f.Session.Log(false).Contains("Satellites: 1 loose objects moved") &&
+                f.Session.Log(false).Contains("Backward wires: 0 -> 0") && !f.Session.Status.Contains("new backward"),
+                "satellite metric/log missing: " + string.Join(";", f.Session.Log(false)));
+            var record = f.Document.UndoUtil.Records.Single();
+            Assert(record.Name == "Format all groups" && record.Before.ContainsKey(loose) && record.Before[loose] == loose.InitialPivot,
+                "satellite absent from undo or recorded after mutation");
+            Tap(f.Canvas); Tap(f.Canvas);
+            Assert(f.Session.LastMoves == 0 && f.Document.UndoUtil.Records.Count == 1 && f.Session.Log(false).Contains("Backward wires: 0 -> 0"),
+                "satellite repeat moved or created undo");
+            foreach (var pair in record.Before) { pair.Key.Attributes.Pivot = pair.Value; pair.Key.Attributes.PerformLayout(); }
+            Assert(loose.Attributes.Pivot == loose.InitialPivot, "single undo did not restore satellite");
         });
         Check(form, "Selected group instability warning remains visible without Debug", f =>
         {
@@ -71,16 +176,20 @@ internal static class SessionTests
             Assert(f.Session.Status == "Already formatted" && f.Session.LastMoves == 0
                 && f.Document.UndoUtil.Records.Count == 1 && record.Before.Count <= 2, "menu path disagrees with FF/no-op");
         });
-        Check(form, "Session menu formats a selected label group and leaves other nodes untouched", f =>
+        Check(form, "Session menu respects a selected label group's return wire and leaves other nodes untouched", f =>
         {
             var group = new GH_Group { NickName = "Group only" };
             group.ObjectIDs.Add(f.First.InstanceGuid); f.Document.Objects.Add(group);
             f.Document.Selection.Clear(); f.Document.Selection.Add(group);
             f.Session.Run();
+            // First feeds the loose Second to its left. A one-node label group
+            // is already packed; formatting must not chase that return wire.
             Assert(f.Session.Status == "Already formatted" && f.Session.LastMoves == 0
                 && !f.Session.Log(false).Any(line => line.Contains("Skipped"))
-                && f.Document.UndoUtil.Creates == 0 && f.First.Attributes != null && f.Second.Attributes.Pivot == f.Second.InitialPivot,
-                "label-only group was skipped or moved a loose node");
+                && f.Document.UndoUtil.Creates == 0 && f.First.Attributes != null
+                && f.First.Attributes.Pivot == f.First.InitialPivot && f.Second.Attributes.Pivot == f.Second.InitialPivot,
+                "label-only group was skipped or chased a deliberate return wire");
+            f.Session.Run(); Assert(f.Session.LastMoves == 0, "label window moved on repeat");
         });
         Check(form, "Session FF captures a selected group and writes one Format groups undo record", f =>
         {
@@ -102,6 +211,7 @@ internal static class SessionTests
             Assert(f.Session.Status == "'Protected [LOCK]': Selection belongs to locked group" && f.Session.LastMoves == 0
                 && f.Document.UndoUtil.Creates == 0 && f.First.Attributes.Pivot == f.First.InitialPivot
                 && f.Second.Attributes.Pivot == f.Second.InitialPivot, "locked selection moved or did not name the group");
+            Assert(!f.Session.Log(false).Any(line => line.StartsWith("Backward wires:")), "refusal invented a measurement");
         });
         Check(form, "Session FF selection refusal describes a default group once and never lays out its membership cycle", f =>
         {
@@ -270,6 +380,16 @@ internal static class SessionTests
             Assert(f.Session.Status.Contains("Gaps must be finite") && f.Document.UndoUtil.Creates == 0
                 && f.First.Attributes.Pivot == f.First.InitialPivot && f.Second.Attributes.Pivot == f.Second.InitialPivot,
                 "invalid options moved objects");
+            Assert(!f.Session.Log(false).Any(line => line.StartsWith("Backward wires:")), "failure invented a measurement");
+        });
+        Check(form, "Session rolled-back apply emits no backward measurement", f =>
+        {
+            f.Document.UndoUtil.Reject = true;
+            f.Session.Run();
+            Assert(f.Session.LastMoves == 0 && f.Document.UndoUtil.Records.Count == 0 &&
+                f.First.Attributes.Pivot == f.First.InitialPivot && f.Second.Attributes.Pivot == f.Second.InitialPivot,
+                "rejected undo was not rolled back");
+            Assert(!f.Session.Log(false).Any(line => line.StartsWith("Backward wires:")), "rollback invented a measurement");
         });
         Check(form, "Session paint failure logs once and disables pill without further invalidations", f =>
         {

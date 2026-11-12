@@ -197,12 +197,15 @@ namespace HopperFormat
                         if (layout.Notices.Contains(line)) _log.Add(line);
                         else _detail.Add(line);
                     if (!layout.Success) { Finish(layout.Diagnostic); return; }
+                    all.IncludeSatellites(layout);
+                    var backward = BackwardWireCapture.Count(_document, layout.Moves, all.Objects);
                     bool applied = FormatApplier.Apply(_document, layout.Moves, all.Objects, out var allStatus, true, true, all.Membership);
                     if (applied)
                     {
                         LastMoves = layout.Moves.Count;
                         if (outcome.Skipped > 0) allStatus += $" ({outcome.Skipped} skipped)";
                         if (layout.Unstable) allStatus += " (not fully settled, FF again may adjust)";
+                        allStatus = ReportBackward(allStatus, backward);
                     }
                     Finish(allStatus);
                     return;
@@ -219,9 +222,11 @@ namespace HopperFormat
                     if (result.Notices.Contains(line)) _log.Add(line);
                     else _detail.Add(line);
                 if (!result.Success) { Finish(result.Diagnostic); return; }
+                var backwardSelection = BackwardWireCapture.Count(_document, result.Moves, capture.Objects);
                 var success = FormatApplier.Apply(_document, result.Moves, capture.Objects, out var status, capture.ContainsGroups, membership: capture.Membership);
                 if (success) LastMoves = result.Moves.Count;
                 if (success && result.Unstable) status += " (not fully settled, FF again may adjust)";
+                if (success) status = ReportBackward(status, backwardSelection);
                 Finish(status);
             }
             finally { _running = false; }
@@ -231,6 +236,13 @@ namespace HopperFormat
         {
             _log.Insert(0, status);
             Show(status);
+        }
+
+        private string ReportBackward(string status, BackwardWireCounts counts)
+        {
+            _log.Add($"Backward wires: {counts.Before} -> {counts.After}" +
+                (counts.Created > 0 ? $" ({counts.Created} new)" : string.Empty));
+            return status + (counts.Created > 0 ? $" · {counts.Created} new backward wire(s)" : string.Empty);
         }
 
         private void Show(string status)

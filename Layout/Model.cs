@@ -54,6 +54,8 @@ namespace HopperFormat.Layout
         public Guid Node { get; set; }
         public int Port { get; set; }
         public double SourceGripY { get; set; }
+        public double? SourceGripX { get; set; }
+        public Guid SourceObjectId { get; set; }
     }
 
     public sealed class ExternalOutbound
@@ -61,6 +63,8 @@ namespace HopperFormat.Layout
         public Guid Node { get; set; }
         public int Port { get; set; }
         public double TargetGripY { get; set; }
+        public double? TargetGripX { get; set; }
+        public Guid TargetObjectId { get; set; }
     }
 
     public sealed class Options

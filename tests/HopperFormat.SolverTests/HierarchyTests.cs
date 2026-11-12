@@ -48,6 +48,71 @@ internal static class HierarchyTests
 
     internal static int Run()
     {
+        Check("Hierarchy moving child levels retain distinct island left edges", () => {
+            var a = N(1, 0, 0); var b = N(2, 150, 80);
+            var c = N(3, 400, 0); var d = N(4, 600, 80);
+            var e = N(5, 900, 200); var f = N(6, 1000, 280);
+            var child = G(101, new[] { c, d, e, f });
+            var s = new HierarchySnapshot { Groups = new[] { G(100, new[] { a, b }, child) },
+                Edges = new[] { E(a, b), E(b, c), E(c, d), E(e, f) },
+                Outbound = new[] { new ExternalOutbound { Node = f.Id, TargetGripX = 0 } } };
+            var r = Solve(s);
+            Near(r.Tops[e.Id].X - r.Tops[c.Id].X, 500, "moving child island offsets");
+            s.Outbound[0].TargetGripX = null;
+            var withoutX = Solve(s);
+            foreach (var n in new[] { c, d, e, f })
+                Near(r.Tops[n.Id].X - r.Tops[c.Id].X, withoutX.Tops[n.Id].X - withoutX.Tops[c.Id].X,
+                    "outside X entered moving child level");
+            s.Outbound[0].TargetGripX = 0;
+            Stable(s, r); Geometry(s, r);
+        });
+        Check("Outside X guides the sole root and stays absent at nested child and moving sibling levels", () => {
+            var chain = Enumerable.Range(1, 4).Select(i => N(i, (i - 1) * 100, i * 60)).ToArray();
+            var early = N(5, 100, 0);
+            var child = G(101, chain.Concat(new[] { early }).ToArray());
+            var e = new ExternalOutbound { Node = early.Id, TargetGripY = 0 };
+            var s = new HierarchySnapshot { Groups = new[] { child }, Outbound = new[] { e },
+                Edges = new[] { E(chain[0], chain[1]), E(chain[1], chain[2]), E(chain[2], chain[3]), E(chain[0], early) } };
+            var legacy = Solve(s);
+            e.TargetGripX = 230;
+            var withX = Solve(s);
+            Assert(withX.Tops[early.Id].X + early.Width <= 230 && withX.Tops[early.Id].X < legacy.Tops[early.Id].X,
+                "sole-root window did not keep the consumer forward");
+            Stable(s, withX);
+            s.Groups = new[] { G(100, Array.Empty<Node>(), child) };
+            var nested = Solve(s); e.TargetGripX = null;
+            var nestedLegacy = Solve(s);
+            foreach (var n in chain.Concat(new[] { early }))
+                Near(nested.Tops[n.Id].X - nested.Tops[early.Id].X,
+                    nestedLegacy.Tops[n.Id].X - nestedLegacy.Tops[early.Id].X, "outside X changed nested-child relative layout");
+            e.TargetGripX = 230; Stable(s, nested); e.TargetGripX = null;
+            // A wire crossing only a child boundary receives a Y hint, even
+            // though the real sibling's input X is available in the flat graph.
+            var sibling = N(6, 230, 100);
+            s.Groups = new[] { G(100, new[] { sibling }, child) };
+            s.Outbound = Array.Empty<ExternalOutbound>();
+            s.Edges = s.Edges.Concat(new[] { E(early, sibling) }).ToArray();
+            var r = Solve(s); Stable(s, r);
+            Near(r.Tops[early.Id].X, r.Tops[chain[3].Id].X, "child's terminal pin must remain");
+        });
+        Check("Outside X guides the top Selection layout and stays absent in moving root layouts", () => {
+            var chain = Enumerable.Range(1, 4).Select(i => N(i, (i - 1) * 100, i * 60)).ToArray();
+            var early = N(5, 100, 0);
+            var s = new HierarchySnapshot { Groups = new[] { G(100, new[] { chain[0] }) },
+                LooseNodes = chain.Skip(1).Concat(new[] { early }).ToArray(),
+                Edges = new[] { E(chain[0], chain[1]), E(chain[1], chain[2]), E(chain[2], chain[3]), E(chain[0], early) },
+                Outbound = new[] { new ExternalOutbound { Node = early.Id, TargetGripX = 230 } } };
+            var r = Solve(s);
+            s.Outbound[0].TargetGripX = null;
+            Assert(r.Tops[early.Id].X + early.Width <= 230 && r.Tops[early.Id].X < Solve(s).Tops[early.Id].X,
+                "Selection window did not keep the consumer forward");
+            s.Outbound[0].TargetGripX = 230; Stable(s, r);
+            s.Outbound[0].TargetGripX = 230;
+            s.Groups = new[] { G(100, chain.Concat(new[] { early }).ToArray()) };
+            s.LooseNodes = new[] { N(6, 500, 0) };
+            r = Solve(s);
+            Near(r.Tops[early.Id].X, r.Tops[chain[3].Id].X, "moving root ran inner guard"); Stable(s, r);
+        });
         Check("Hierarchy nested group solves bottom-up and composes each pivot once", () => {
             var n = Enumerable.Range(1, 5).Select(i => N(i, i * 130, 300 - i * 40)).ToArray();
             var child = G(101, n.Skip(1).Take(3).ToArray()); var outer = G(100, new[] { n[0], n[4] }, child);
