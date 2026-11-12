@@ -12,6 +12,20 @@ internal static class HostAdapterTests
     private static int _failures;
     internal static int Run()
     {
+        Check("Backward capture uses the target even without moves and excludes unrelated wires", () =>
+        {
+            var document = new GH_Document();
+            var source = new TestComponent(0, 1) { InitialPivot = new PointF(500, 0) };
+            var target = new TestComponent(1, 0) { InitialPivot = new PointF(0, 100) };
+            var other = new TestComponent(1, 0) { InitialPivot = new PointF(0, 200) };
+            TestParam.Connect(source.Params.Output[0], target.Params.Input[0]);
+            TestParam.Connect(source.Params.Output[0], other.Params.Input[0]);
+            document.Objects.AddRange(new[] { source, target, other });
+            foreach (var obj in document.Objects) { obj.CreateAttributes(); obj.Attributes.PerformLayout(); }
+            var counts = BackwardWireCapture.Count(document, Array.Empty<Move>(),
+                new Dictionary<Guid, IGH_DocumentObject> { [target.InstanceGuid] = target });
+            Assert(counts.Before == 1 && counts.After == 1 && counts.Created == 0, "target scope followed moves or counted unrelated wire");
+        });
         Check("Snapshot includes selected group descendants and reports skipped loose objects", () =>
         {
             var document = new GH_Document();

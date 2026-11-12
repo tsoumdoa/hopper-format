@@ -27,6 +27,28 @@ internal static class SessionTests
             Assert(f.Session.Log(false).Contains("Backward wires: 0 -> 0") && f.Session.Status == "Already formatted"
                 && PillText(f) == "Already formatted" && f.Document.UndoUtil.Records.Count == 1, "no-op changed status/undo");
         });
+        Check(form, "No-move selection and group runs retain a backward boundary wire", f =>
+        {
+            f.First.Params.Input.Add(new TestParam { Owner = f.First, Kind = GH_ParamKind.input });
+            var outside = new TestComponent(0, 1) { InitialPivot = new PointF(3000, 100) };
+            TestParam.Connect(outside.Params.Output[0], f.First.Params.Input[0]);
+            f.Document.Objects.Add(outside);
+            f.Session.Run();
+            Assert(f.Session.Log(false).Contains("Backward wires: 2 -> 1"), "first run lost boundary wire");
+            foreach (bool group in new[] { false, true })
+            {
+                if (group)
+                {
+                    var g = new GH_Group { Document = f.Document };
+                    g.ObjectIDs.AddRange(new[] { f.First.InstanceGuid, f.Second.InstanceGuid });
+                    f.Document.Objects.Add(g); f.Document.Selection.Clear(); f.Document.Selection.Add(g);
+                    f.Session.Run(); // Establish the group's layout before checking its no-op.
+                }
+                f.Session.Run();
+                Assert(f.Session.LastMoves == 0 && f.Session.Log(false).Contains("Backward wires: 1 -> 1"),
+                    "no-op lost remaining boundary wire");
+            }
+        });
         Check(form, "Column windows avoid the backward boundary wire for selection and groups", f =>
         {
             var outside = new TestComponent(1, 0) { InitialPivot = new PointF(190, 100) };
@@ -83,8 +105,8 @@ internal static class SessionTests
                 f.Session.Status.EndsWith(" · 1 new backward wire(s)") && PillText(f) == f.Session.Status,
                 "cross-group metric lost or duplicated a wire: " + string.Join(";", f.Session.Log(false)));
             f.Session.RunAll();
-            Assert(f.Session.Status == "Formatted all groups · 0 moves" && f.Session.Log(false).Contains("Backward wires: 0 -> 0") &&
-                f.Document.UndoUtil.Records.Count == 1 && PillText(f) == f.Session.Status, "format-all no-op changed");
+            Assert(f.Session.Status == "Formatted all groups · 0 moves" && f.Session.Log(false).Contains("Backward wires: 1 -> 1") &&
+                f.Document.UndoUtil.Records.Count == 1 && PillText(f) == f.Session.Status, "format-all no-op changed: " + string.Join(";", f.Session.Log(false)));
         });
         Check(form, "Selected group instability warning remains visible without Debug", f =>
         {
