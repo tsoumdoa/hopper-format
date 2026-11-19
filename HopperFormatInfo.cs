@@ -11,7 +11,7 @@ namespace HopperFormat
         public override Bitmap Icon => LoadIcon();
         public override Guid Id => new Guid("67cb28c8-cf29-4b6c-9c1c-030b7687e4c7");
         public override string Description => "Format selected Grasshopper components as a left-to-right dataflow";
-        public override string AuthorName => "AEC Tooling";
+        public override string AuthorName => "aectooling by tomoS";
         public override string AuthorContact => string.Empty;
         public override string AssemblyVersion => GetType().Assembly.GetName().Version.ToString();
 
