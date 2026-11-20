@@ -135,7 +135,7 @@ namespace HopperFormat.Layout
                 double width = columns[c].Select(n => g.Indent[n.Id] + n.Width + n.Reserve.Right).DefaultIfEmpty(0).Max();
                 double nextLeft = columns[c + 1].Select(n => g.Indent[n.Id] - n.Reserve.Left).DefaultIfEmpty(0).Min();
                 g.Packed[c + 1] = g.Packed[c] + width - nextLeft +
-                    (columns[c].Concat(columns[c + 1]).Any(n => n.Kind == NodeKind.Group) ? graph.Options.GroupGapX : graph.Options.GapX);
+                    (columns[c].Concat(columns[c + 1]).Any(Placement.GroupGaps) ? graph.Options.GroupGapX : graph.Options.GapX);
             }
             g.Left = g.Packed.Select(x => anchorX + x).ToArray();
             void Add(Guid id, double grip, double outside, bool lower)

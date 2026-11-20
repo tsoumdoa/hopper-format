@@ -405,6 +405,7 @@ namespace HopperFormat.Layout
                 {
                     // A label with notes or a tag reserves its whole box but keeps its node's role.
                     var only = nodes[members[g.Id].Single(nodes.ContainsKey)];
+                    u.Node.NodeGaps = !members[g.Id].Any(nonNodes.ContainsKey) && g.TagSize.X > 0 && g.TagSize.Y > 0;
                     u.Node.ParamRole = only.Kind == NodeKind.Param;
                     u.Node.AlignRight = tops[only.Id].X + only.Width - b.X;
                 }

@@ -38,6 +38,9 @@ namespace HopperFormat.Layout
         public double Height { get; set; }
         // Clearance beyond the alignment box; never changes its alignment edges.
         public Padding Reserve { get; set; }
+        // Tag-only labels reserve their whole group box, with ordinary node gaps.
+        // This changes clearance spacing, not group alignment or wire semantics.
+        public bool NodeGaps { get; set; }
         public bool Widget { get; set; }
         // A group unit standing in for one labelled param: it ranks like that param
         // (output params go to the last column) while reserving its whole box.

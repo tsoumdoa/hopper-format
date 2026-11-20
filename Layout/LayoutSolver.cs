@@ -163,7 +163,7 @@ namespace HopperFormat.Layout
             return new Snapshot { Edges = snapshot.Edges, Inbound = snapshot.Inbound, Outbound = snapshot.Outbound,
                 Options = snapshot.Options, Nodes = snapshot.Nodes.Select(n => new Node { Id = n.Id, Label = n.Label,
                     Width = n.Width, Height = n.Height, PivotOffset = n.PivotOffset, CurrentTop = tops[n.Id],
-                    Kind = n.Kind, Widget = n.Widget, ParamRole = n.ParamRole, AlignRight = n.AlignRight, Reserve = n.Reserve,
+                    Kind = n.Kind, Widget = n.Widget, ParamRole = n.ParamRole, AlignRight = n.AlignRight, Reserve = n.Reserve, NodeGaps = n.NodeGaps,
                     Inputs = n.Inputs, Outputs = n.Outputs }).ToArray() };
         }
     }

@@ -215,7 +215,7 @@ namespace HopperFormat.Layout
 
         internal static double Gap(Graph graph, Node a, Node b)
         {
-            if (a.Kind == NodeKind.Group || b.Kind == NodeKind.Group) return graph.Options.GroupGapY;
+            if (GroupGaps(a) || GroupGaps(b)) return graph.Options.GroupGapY;
             if (a.Widget && b.Widget)
             {
                 var successorsA = graph.Out[a.Id].Select(e => e.To).Distinct().ToArray();
@@ -227,6 +227,7 @@ namespace HopperFormat.Layout
         }
 
         internal static double AlignEdge(Node n) => n.AlignRight > 0 ? n.AlignRight : n.Width;
+        internal static bool GroupGaps(Node n) => n != null && n.Kind == NodeKind.Group && !n.NodeGaps;
         // Group-only columns align left edges; a labelled param keeps its param alignment.
         internal static bool PureGroup(Node n) => n.Kind == NodeKind.Group && !n.ParamRole;
 
@@ -236,12 +237,12 @@ namespace HopperFormat.Layout
         {
             int index = Array.IndexOf(graph.Nodes, node);
             var next = index + 1 < graph.Nodes.Length ? graph.Nodes[index + 1] : null;
-            return (node.Kind == NodeKind.Group || next?.Kind == NodeKind.Group ? graph.Options.GroupGapY : graph.Options.GapY)
+            return (GroupGaps(node) || GroupGaps(next) ? graph.Options.GroupGapY : graph.Options.GapY)
                 + node.Reserve.Bottom + (next?.Reserve.Top ?? 0);
         }
 
         internal static double IslandGap(Graph graph, IEnumerable<Node> a, IEnumerable<Node> b) =>
-            a.Concat(b).Any(n => n.Kind == NodeKind.Group) ? graph.Options.GroupGapY : 2 * graph.Options.GapY;
+            a.Concat(b).Any(GroupGaps) ? graph.Options.GroupGapY : 2 * graph.Options.GapY;
 
         private sealed class Constraint
         {
