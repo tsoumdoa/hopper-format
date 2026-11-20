@@ -69,6 +69,17 @@ laid out with their parent and logged. Empty nested groups are ignored, and node
 with empty bounds are excluded and reported. A selected **[lock]** group,
 a node inside one, or a locked descendant blocks formatting without moving anything.
 
+### Group names
+
+Rhino 8 draws a named group's name as a tag above its box. Formatting keeps that tag
+clear: gaps above a named group are measured from the top of its tag, and a tag wider
+than its group gets the same sideways clearance as the box. Groups still line up by
+their box edges, so a named group next to an unnamed one keeps its box top level with
+the other. A named single-node group is no longer see-through: it reserves its box and
+tag but keeps its node's role and the ordinary node gaps, so a stack of named labels
+sits one node gap (16 units) apart, measured from each tag. Next to a real group the
+group gaps apply. Unnamed label groups are unchanged.
+
 ## Format all
 
 Clear the selection and tap **FF** to format every top-level group, including label
@@ -78,6 +89,7 @@ edges snap together, small gaps even to 50 units horizontally or 40 vertically,
 and larger gaps stay. Only neighbours in the same snapped row can push right.
 All other collisions push the whole row down with clearance, including growth
 into objects below it. Column snapping keeps vertical stacks left-aligned.
+Name tags count as part of a group's box for clearance, but not for snapping.
 Groups also shift sideways so wires to other groups and to loose objects keep
 running left to right. A loose object wired to exactly one group moves along with
 that group; every other ungrouped object stays where it is.
@@ -166,7 +178,7 @@ HopperFormat is published as a beta. In Rhino 8, run `PackageManager`, tick
 **Include pre-releases**, search for `hopperformat` and install. Or close Rhino and run:
 
 ```text
-yak install hopperformat 0.1.0-beta.4
+yak install hopperformat 0.1.0-beta.6
 ```
 
 ## Install locally
@@ -175,7 +187,7 @@ Close Rhino first. From the repository root in **Git Bash on Windows**, build,
 test, package, and install locally with:
 
 ```bash
-./scripts/release-yak.sh 0.1.0-beta.4 --allow-dirty --install
+./scripts/release-yak.sh 0.1.0-beta.6 --allow-dirty --install
 ```
 
 The script replaces an already installed copy of the same version so a rebuilt
@@ -188,7 +200,7 @@ To install the built package manually from PowerShell, run this command from
 the repository root, using the artifact folder as the source:
 
 ```powershell
-& "C:\Program Files\Rhino 8\System\Yak.exe" install --source "$PWD\artifacts\yak" hopperformat 0.1.0-beta.4
+& "C:\Program Files\Rhino 8\System\Yak.exe" install --source "$PWD\artifacts\yak" hopperformat 0.1.0-beta.6
 ```
 
 Restart Rhino and open Grasshopper after installation to load the new build.
