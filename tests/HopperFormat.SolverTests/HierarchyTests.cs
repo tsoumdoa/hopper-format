@@ -16,8 +16,9 @@ internal static class HierarchyTests
         Id = Id(id), Label = "'G" + id + "'", Nodes = nodes, Children = children, Padding = new Padding(10, 20, 12, 14) };
     private static IEnumerable<Node> Nodes(HierarchyGroup g) => g.Nodes.Concat(g.Children.SelectMany(Nodes)).GroupBy(n => n.Id).Select(a => a.First());
     private static IEnumerable<HierarchyGroup> Groups(HierarchyGroup g) => new[] { g }.Concat(g.Children.SelectMany(Groups));
-    // Fixtures never share a labelled node with an unrelated group, so notes alone decide.
-    private static bool SeeThrough(HierarchyGroup g) => Nodes(g).Count() == 1 && !Groups(g).SelectMany(c => c.NonNodes).Any();
+    // Geometry fixtures do not share a labelled node with an unrelated group.
+    private static bool SeeThrough(HierarchyGroup g) => Nodes(g).Count() == 1 &&
+        !Groups(g).SelectMany(c => c.NonNodes).Any() && (g.TagSize.X <= 0 || g.TagSize.Y <= 0);
     private static void Assert(bool ok, string message) { if (!ok) throw new Exception(message); }
     private static void Near(double a, double b, string message) => Assert(Math.Abs(a - b) < 1e-7, message + ": " + a + " != " + b);
     private static void Check(string name, Action test)
@@ -143,12 +144,65 @@ internal static class HierarchyTests
             Assert(r.GroupBoxes[other.Id].Y - raw.Bottom >= s.Options.GroupGapY, "parent spacing lost");
             Stable(s, r);
         });
-        Check("Hierarchy see-through named labels keep identical node layout", () => {
+        Check("Hierarchy named single-node roots clear both tags in either Guid order", () => {
+            foreach (bool reversed in new[] { false, true }) {
+                var upper = G(reversed ? 101 : 100, new[] { N(1, 0, 0) });
+                var lower = G(reversed ? 100 : 101, new[] { N(2, 0, 60) });
+                foreach (var g in new[] { upper, lower }) {
+                    g.Padding = new Padding(9, 9, 9, 9); g.TagSize = new Vec2(131, 31);
+                }
+                var s = new HierarchySnapshot { Groups = new[] { lower, upper } };
+                var r = Solve(s);
+                Box Tag(HierarchyGroup g) { var b = r.GroupBoxes[g.Id]; return new Box(b.X + (b.Width - g.TagSize.X) / 2,
+                    b.Y - g.TagSize.Y, g.TagSize.X, g.TagSize.Y); }
+                Assert(!Overlap(r.GroupBoxes[upper.Id], Tag(lower)) && !Overlap(r.GroupBoxes[lower.Id], Tag(upper)), "box overlaps other tag");
+                Near(Tag(lower).Y - r.GroupBoxes[upper.Id].Bottom, s.Options.GroupGapY, "box-to-tag gap");
+                Near(r.GroupBoxes[lower.Id].Y - r.GroupBoxes[upper.Id].Bottom, 71, "raw box gap");
+                Near(r.GroupFootprints[lower.Id].Y, Tag(lower).Y, "label tag reserved");
+                WholeUnitMoves(s, r); Stable(s, r);
+                Assert(Fingerprint(r) == Fingerprint(Solve(new HierarchySnapshot { Groups = s.Groups.Reverse().ToArray() })), "root enumeration changed layout");
+            }
+        });
+        Check("Hierarchy named nested label clears a sibling directly above its tag", () => {
+            var sibling = N(1); var node = N(2, 0, 60);
+            var label = G(101, new[] { node }); label.Padding = new Padding(9, 9, 9, 9); label.TagSize = new Vec2(131, 31);
+            var s = new HierarchySnapshot { Groups = new[] { G(100, new[] { sibling }, label) } };
+            var r = Solve(s); var b = r.GroupBoxes[label.Id];
+            var tag = new Box(b.X + (b.Width - label.TagSize.X) / 2, b.Y - label.TagSize.Y, label.TagSize.X, label.TagSize.Y);
+            Assert(!Overlap(Placed(sibling, r), tag), "sibling overlaps nested tag");
+            Near(tag.Y - Placed(sibling, r).Bottom, s.Options.GroupGapY, "sibling-to-tag gap");
+            WholeUnitMoves(s, r); Stable(s, r); Geometry(s, r);
+        });
+        Check("Hierarchy unnamed labels keep identical bare-node layout", () => {
             var label = G(100, new[] { N(1) });
             var s = new HierarchySnapshot { Groups = new[] { label }, LooseNodes = new[] { N(2, 0, 200) } };
+            var r = Solve(s);
+            var bare = LayoutSolver.Solve(new Snapshot { Nodes = label.Nodes.Concat(s.LooseNodes).ToArray(), Options = s.Options });
+            Assert(bare.Success && Fingerprint(bare) == Fingerprint(r), "unnamed label changed node layout");
+            Stable(s, r);
+        });
+        Check("Hierarchy named shared labels keep following their node", () => {
+            var a = N(1, 0, 0); var b = N(2, 0, 60); var loose = N(3, 0, 300);
+            var root = G(100, new[] { a, b }); var label = G(101, new[] { b });
+            var s = new HierarchySnapshot { Groups = new[] { root, label }, LooseNodes = new[] { loose }, Edges = new[] { E(a, b) } };
             var plain = Solve(s); label.TagSize = new Vec2(501, 80); var tagged = Solve(s);
-            Assert(Fingerprint(plain) == Fingerprint(tagged), "see-through tag changed node layout");
-            Stable(s, tagged);
+            Assert(Fingerprint(plain) == Fingerprint(tagged), "shared tag changed node layout");
+            Near(tagged.GroupBoxes[label.Id].X, tagged.Tops[b.Id].X - label.Padding.Left, "shared label follows node X");
+            Near(tagged.GroupBoxes[label.Id].Y, tagged.Tops[b.Id].Y - label.Padding.Top, "shared label follows node Y");
+            Near(tagged.GroupFootprints[label.Id].Y, tagged.GroupBoxes[label.Id].Y, "shared tag must remain unreserved");
+            WholeUnitMoves(s, tagged); Stable(s, tagged);
+        });
+        Check("Hierarchy named param label keeps its last column and node right alignment", () => {
+            var source = N(1); var middle = N(2, 200); var last = N(3, 400, 100, 140);
+            var output = N(4, 200, 250, 50, 20); output.Kind = NodeKind.Param;
+            var label = G(100, new[] { output }); label.TagSize = new Vec2(251, 31);
+            var s = new HierarchySnapshot { Groups = new[] { label }, LooseNodes = new[] { source, middle, last },
+                Edges = new[] { E(source, middle), E(middle, last), E(source, output) } };
+            var r = Solve(s);
+            Near(Placed(output, r).Right, Placed(last, r).Right, "named output right alignment in last column");
+            Assert(r.Tops[output.Id].X > Placed(middle, r).Right, "named output lost param role");
+            Near(r.GroupFootprints[label.Id].Y, r.GroupBoxes[label.Id].Y - 31, "param tag reserved");
+            WholeUnitMoves(s, r); Stable(s, r);
         });
         Check("Hierarchy moving child levels retain distinct island left edges", () => {
             var a = N(1, 0, 0); var b = N(2, 150, 80);

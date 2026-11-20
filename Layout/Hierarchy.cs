@@ -182,11 +182,13 @@ namespace HopperFormat.Layout
             // Ownership: a single-node group never creates a second layout owner.
             private bool LabelGroup(HierarchyGroup group) => members[group.Id].Count(nodes.ContainsKey) == 1;
             // Layout: a label is see-through only while its node's footprint is its whole
-            // visible content. Notes give it a footprint of its own, so it then reserves
-            // its box like a real group, unless a member also belongs to an unrelated
-            // group: that space is not the label's alone, so it follows its node instead.
+            // visible content. Notes or a name tag give it a footprint of its own,
+            // so it reserves its box like a real group, unless a member also belongs
+            // to an unrelated group: that space is not the label's alone, so it follows
+            // its node instead.
             private bool SeeThrough(HierarchyGroup group) => LabelGroup(group) &&
-                (!members[group.Id].Any(nonNodes.ContainsKey) || members[group.Id].Any(Shared));
+                ((!members[group.Id].Any(nonNodes.ContainsKey) && (group.TagSize.X <= 0 || group.TagSize.Y <= 0)) ||
+                    members[group.Id].Any(Shared));
             private bool Shared(Guid id)
             {
                 var paths = owners[id];
@@ -229,8 +231,8 @@ namespace HopperFormat.Layout
             private IEnumerable<HierarchyGroup> LayoutChildren(HierarchyGroup g) => MeasurableChildren(g)
                 .SelectMany(c => dissolved.Contains(c.Id) ? LayoutChildren(c) : new[] { c });
             private IEnumerable<HierarchyGroup> RealChildren(HierarchyGroup g) => LayoutChildren(g).Where(c => !SeeThrough(c));
-            // Labels affect the visible box (and therefore measured padding), but never
-            // compete as layout units. Keep those envelopes separate.
+            // See-through labels affect the visible box (and therefore measured padding),
+            // but never compete as layout units. Keep those envelopes separate.
             private IEnumerable<Guid> PhysicalIds(HierarchyGroup g)
             {
                 var indirect = new HashSet<Guid>(g.Children.SelectMany(c => members[c.Id]));
@@ -401,7 +403,7 @@ namespace HopperFormat.Layout
                     PivotOffset = new Vec2(pivot.X - b.X, pivot.Y - b.Y) } };
                 if (LabelGroup(g))
                 {
-                    // A label with notes reserves its whole box but keeps its node's role.
+                    // A label with notes or a tag reserves its whole box but keeps its node's role.
                     var only = nodes[members[g.Id].Single(nodes.ContainsKey)];
                     u.Node.ParamRole = only.Kind == NodeKind.Param;
                     u.Node.AlignRight = tops[only.Id].X + only.Width - b.X;

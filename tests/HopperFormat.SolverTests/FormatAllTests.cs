@@ -12,6 +12,8 @@ internal static class FormatAllTests
     private static void At(Result r, int id, double x, double y)
     { var b = r.GroupBoxes[Id(id)]; Assert(Math.Abs(b.X - x) < 1e-7 && Math.Abs(b.Y - y) < 1e-7, Coordinates(r)); }
     private static bool Whole(double value) => Math.Abs(value - Math.Round(value)) <= 1e-6;
+    private static bool Overlap(Box a, Box b) => a.Right > b.X + 1e-7 && b.Right > a.X + 1e-7 &&
+        a.Bottom > b.Y + 1e-7 && b.Bottom > a.Y + 1e-7;
     private static void Clearance(Result result, IEnumerable<Box> obstacles, string context)
     {
         foreach (var p in result.GroupBoxes) foreach (var other in result.GroupBoxes.Where(q => q.Key != p.Key).Select(q => q.Value).Concat(obstacles)) {
@@ -87,6 +89,25 @@ internal static class FormatAllTests
             Assert(r.GroupBoxes[lower.Id].Y - 31 - r.GroupBoxes[upper.Id].Bottom == s.Options.GroupGapY, "tidy ignored tag top");
             Assert(r.GroupBoxes[lower.Id].Width == 80 && r.GroupBoxes[lower.Id].Height == 96, "output is not raw box");
             WholeMoves(s, r, "odd tag tidy"); StableAll(s, r, "odd tag tidy");
+        });
+        Check("Format all named non-alias single-node targets reserve tags in tidy", () => {
+            foreach (bool reversed in new[] { false, true }) {
+                FormatAllTarget Target(int id, int node, double y) {
+                    var g = new HierarchyGroup { Id = Id(id), TagSize = new Vec2(131, 31), Padding = new Padding(9, 9, 9, 9),
+                        Nodes = new[] { TestNode(node, 0, y) } };
+                    return new FormatAllTarget { Id = g.Id, Bounds = new Box(-9, y - 9, 98, 58),
+                        Hierarchy = new HierarchySnapshot { Groups = new[] { g } } };
+                }
+                var upper = Target(reversed ? 101 : 100, 1, 0); var lower = Target(reversed ? 100 : 101, 2, 60);
+                var s = new FormatAllSnapshot { Targets = new[] { lower, upper } };
+                var result = FormatAllSolver.Solve(s); var r = result.Layout;
+                Assert(r.Success && !r.Unstable && result.Formatted == 2 && result.Skipped == 0, r.Diagnostic);
+                Box Tag(FormatAllTarget t) { var b = r.GroupBoxes[t.Id]; return new Box(b.X + (b.Width - 131) / 2, b.Y - 31, 131, 31); }
+                Assert(!Overlap(r.GroupBoxes[upper.Id], Tag(lower)) && !Overlap(r.GroupBoxes[lower.Id], Tag(upper)), "tidy box overlaps other tag");
+                Assert(Tag(lower).Y - r.GroupBoxes[upper.Id].Bottom == s.Options.GroupGapY, "tidy lost single-node tag clearance");
+                Assert(r.GroupBoxes[lower.Id].Y - r.GroupBoxes[upper.Id].Bottom == 71, "tidy raw box gap");
+                WholeMoves(s, r, "named single-node tidy"); StableAll(s, r, "named single-node tidy");
+            }
         });
         Check("Format all same-row clearance includes wide tags on both neighbours", () => {
             FormatAllTarget Target(int id, int node, double x, double tagWidth) {
@@ -321,6 +342,13 @@ internal static class FormatAllTests
             Assert(r.Layout.Success && r.Formatted == 2 && r.Skipped == 0 && r.Layout.Tops.Count == 2,"label overlap refused or duplicated a node");
             Assert(r.Layout.GroupBoxes[label.Id].X == r.Layout.Tops[b.Id].X - 3,"label did not follow node");
             StableAll(s,r.Layout,"label overlap");
+            label.TagSize = new Vec2(501, 80);
+            var named = FormatAllSolver.Solve(s);
+            Assert(named.Layout.Success && named.Formatted == 2 && named.Skipped == 0 && named.Layout.Tops.Count == 2, "named alias refused or duplicated node");
+            Assert(Coordinates(named.Layout) == Coordinates(r.Layout), "named alias changed independent tidy footprints");
+            Assert(named.Layout.GroupBoxes[label.Id].X == named.Layout.Tops[b.Id].X - 3 &&
+                named.Layout.GroupBoxes[label.Id].Y == named.Layout.Tops[b.Id].Y - 4, "named alias stopped following node");
+            WholeMoves(s, named.Layout, "named alias"); StableAll(s, named.Layout, "named alias");
         });
         Check("Skipped inner solve moves rigidly with untouched relative contents and whole deltas", () => {
             var a = TestNode(100,10,20); var b = TestNode(101,20,30);
