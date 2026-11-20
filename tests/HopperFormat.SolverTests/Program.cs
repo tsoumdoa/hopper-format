@@ -61,7 +61,7 @@ internal static partial class Program
     {
         return new Snapshot { Nodes = snapshot.Nodes.Select(n => new Node { Id = n.Id, Label = n.Label,
             CurrentTop = result.Tops[n.Id], PivotOffset = n.PivotOffset, Width = n.Width, Height = n.Height,
-            Kind = n.Kind, Widget = n.Widget, ParamRole = n.ParamRole, AlignRight = n.AlignRight,
+            Kind = n.Kind, Widget = n.Widget, ParamRole = n.ParamRole, AlignRight = n.AlignRight, Reserve = n.Reserve, NodeGaps = n.NodeGaps,
             Inputs = n.Inputs, Outputs = n.Outputs }).ToArray(), Edges = snapshot.Edges,
             Inbound = snapshot.Inbound, Outbound = snapshot.Outbound, Options = snapshot.Options };
     }

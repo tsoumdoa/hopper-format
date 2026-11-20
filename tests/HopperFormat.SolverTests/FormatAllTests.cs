@@ -12,6 +12,8 @@ internal static class FormatAllTests
     private static void At(Result r, int id, double x, double y)
     { var b = r.GroupBoxes[Id(id)]; Assert(Math.Abs(b.X - x) < 1e-7 && Math.Abs(b.Y - y) < 1e-7, Coordinates(r)); }
     private static bool Whole(double value) => Math.Abs(value - Math.Round(value)) <= 1e-6;
+    private static bool Overlap(Box a, Box b) => a.Right > b.X + 1e-7 && b.Right > a.X + 1e-7 &&
+        a.Bottom > b.Y + 1e-7 && b.Bottom > a.Y + 1e-7;
     private static void Clearance(Result result, IEnumerable<Box> obstacles, string context)
     {
         foreach (var p in result.GroupBoxes) foreach (var other in result.GroupBoxes.Where(q => q.Key != p.Key).Select(q => q.Value).Concat(obstacles)) {
@@ -40,6 +42,124 @@ internal static class FormatAllTests
     {
         int failures = 0;
         void Check(string name, Action test) { try { test(); Console.WriteLine("PASS " + name); } catch (Exception e) { failures++; Console.WriteLine("FAIL " + name + ": " + e.Message); } }
+        Check("Format all aligned raw row stays fixed with mixed tags in either Guid order", () => {
+            foreach (bool namedFirst in new[] { false, true })
+            foreach (double height in new[] { 10.0, 21.0, 31.0 }) {
+                FormatAllTarget Target(int id, int node, double x, bool named) {
+                    var g = new HierarchyGroup { Id = Id(id), TagSize = named ? new Vec2(60, height) : default,
+                        Nodes = new[] { TestNode(node, x, 0), TestNode(node + 1, x, 56) } };
+                    return new FormatAllTarget { Id = g.Id, Bounds = new Box(x, 0, 80, 96),
+                        Hierarchy = new HierarchySnapshot { Groups = new[] { g } } };
+                }
+                var s = new FormatAllSnapshot { Targets = new[] { Target(100, 1, 0, namedFirst), Target(101, 3, 130, !namedFirst) } };
+                var r = FormatAllSolver.Solve(s).Layout;
+                Assert(r.Success && !r.Unstable, r.Diagnostic);
+                Assert(r.Moves.Count == 0 && r.GroupBoxes.Values.All(b => b.Y == 0),
+                    "tag changed raw row tops: namedFirst=" + namedFirst + ", height=" + height);
+                StableAll(s, r, "mixed tag row");
+            }
+        });
+        Check("Format all raw column stays fixed with a tag wider than its box", () => {
+            foreach (bool namedFirst in new[] { false, true }) {
+                FormatAllTarget Target(int id, int node, double y, bool named) {
+                    var g = new HierarchyGroup { Id = Id(id), TagSize = named ? new Vec2(251, 31) : default,
+                        Nodes = new[] { TestNode(node, 0, y), TestNode(node + 1, 0, y + 56) } };
+                    return new FormatAllTarget { Id = g.Id, Bounds = new Box(0, y, 80, 96),
+                        Hierarchy = new HierarchySnapshot { Groups = new[] { g } } };
+                }
+                var s = new FormatAllSnapshot { Targets = new[] {
+                    Target(100, 1, 0, namedFirst), Target(101, 3, namedFirst ? 136 : 167, !namedFirst) } };
+                var r = FormatAllSolver.Solve(s).Layout;
+                Assert(r.Success && !r.Unstable && r.Moves.Count == 0, "wide tag shifted an aligned raw column");
+                Assert(r.GroupBoxes.Values.All(b => b.X == 0), "raw left edges lost");
+                StableAll(s, r, "wide tag column");
+            }
+        });
+        Check("Format all tidy measures lower tag clearance and preserves raw boxes", () => {
+            FormatAllTarget Target(int id, int first, double y, Vec2 tag) {
+                var g = new HierarchyGroup { Id = Id(id), TagSize = tag,
+                    Nodes = new[] { TestNode(first, 0, y), TestNode(first + 1, 0, y + 56) } };
+                return new FormatAllTarget { Id = g.Id, Bounds = new Box(0, y, 80, 96),
+                    Hierarchy = new HierarchySnapshot { Groups = new[] { g } } };
+            }
+            var upper = Target(100, 1, 0, default); var lower = Target(101, 3, 140, new Vec2(251, 31));
+            var s = new FormatAllSnapshot { Targets = new[] { upper, lower } };
+            var r = FormatAllSolver.Solve(s).Layout;
+            Assert(r.Success && !r.Unstable, r.Diagnostic);
+            Assert(r.GroupBoxes[lower.Id].Y - 31 - r.GroupBoxes[upper.Id].Bottom == s.Options.GroupGapY, "tidy ignored tag top");
+            Assert(r.GroupBoxes[lower.Id].Width == 80 && r.GroupBoxes[lower.Id].Height == 96, "output is not raw box");
+            WholeMoves(s, r, "odd tag tidy"); StableAll(s, r, "odd tag tidy");
+        });
+        Check("Format all named non-alias single-node targets reserve tags in tidy", () => {
+            foreach (bool reversed in new[] { false, true }) {
+                FormatAllTarget Target(int id, int node, double y) {
+                    var g = new HierarchyGroup { Id = Id(id), TagSize = new Vec2(131, 31), Padding = new Padding(9, 9, 9, 9),
+                        Nodes = new[] { TestNode(node, 0, y) } };
+                    return new FormatAllTarget { Id = g.Id, Bounds = new Box(-9, y - 9, 98, 58),
+                        Hierarchy = new HierarchySnapshot { Groups = new[] { g } } };
+                }
+                var upper = Target(reversed ? 101 : 100, 1, 0); var lower = Target(reversed ? 100 : 101, 2, 60);
+                var s = new FormatAllSnapshot { Targets = new[] { lower, upper } };
+                var result = FormatAllSolver.Solve(s); var r = result.Layout;
+                Assert(r.Success && !r.Unstable && result.Formatted == 2 && result.Skipped == 0, r.Diagnostic);
+                Box Tag(FormatAllTarget t) { var b = r.GroupBoxes[t.Id]; return new Box(b.X + (b.Width - 131) / 2, b.Y - 31, 131, 31); }
+                Assert(!Overlap(r.GroupBoxes[upper.Id], Tag(lower)) && !Overlap(r.GroupBoxes[lower.Id], Tag(upper)), "tidy box overlaps other tag");
+                Assert(Tag(lower).Y - r.GroupBoxes[upper.Id].Bottom == s.Options.GroupGapY, "tidy lost single-node tag clearance");
+                Assert(r.GroupBoxes[lower.Id].Y - r.GroupBoxes[upper.Id].Bottom == 71, "tidy raw box gap");
+                WholeMoves(s, r, "named single-node tidy"); StableAll(s, r, "named single-node tidy");
+            }
+        });
+        Check("Format all same-row clearance includes wide tags on both neighbours", () => {
+            FormatAllTarget Target(int id, int node, double x, double tagWidth) {
+                var g = new HierarchyGroup { Id = Id(id), TagSize = new Vec2(tagWidth, 31),
+                    Nodes = new[] { TestNode(node, x, 0), TestNode(node + 1, x, 56) } };
+                return new FormatAllTarget { Id = g.Id, Bounds = new Box(x, 0, 80, 96),
+                    Hierarchy = new HierarchySnapshot { Groups = new[] { g } } };
+            }
+            var s = new FormatAllSnapshot { Targets = new[] { Target(100, 1, 0, 251), Target(101, 3, 90, 201) } };
+            var r = FormatAllSolver.Solve(s).Layout;
+            Assert(r.Success && !r.Unstable, r.Diagnostic);
+            var left = GroupFootprint.IncludeTag(r.GroupBoxes[Id(100)], new Vec2(251, 31));
+            var right = GroupFootprint.IncludeTag(r.GroupBoxes[Id(101)], new Vec2(201, 31));
+            Assert(right.X - left.Right == s.Options.GroupGapX, "wide tag margins lost in same-row push");
+            Assert(r.GroupBoxes[Id(100)].Y == r.GroupBoxes[Id(101)].Y, "wide tag changed raw row alignment");
+            WholeMoves(s, r, "two wide tags"); StableAll(s, r, "two wide tags");
+        });
+        Check("Tagged tidy retains clearance and whole fixed points across 300 fractional scenes", () => {
+            for (int seed = 0; seed < 300; seed++) {
+                var random = new Random(seed);
+                Box Make() => new Box(random.Next(800) + random.NextDouble(), random.Next(600) + random.NextDouble(),
+                    random.Next(40, 180) + random.NextDouble(), random.Next(40, 180) + random.NextDouble());
+                var raw = Enumerable.Range(1, random.Next(2, 10)).ToDictionary(Id, _ => Make());
+                var tags = raw.Keys.ToDictionary(id => id, _ => random.Next(3) == 0 ? default : new Vec2(random.Next(60, 500), random.Next(10, 60)));
+                var footprints = raw.ToDictionary(p => p.Key, p => GroupFootprint.IncludeTag(p.Value, tags[p.Key]));
+                var obstacles = Enumerable.Range(0, random.Next(4)).Select(_ => Make()).ToArray();
+                var r = GroupTidy.Solve(footprints, obstacles, new Options(), null, raw);
+                Assert(r.Success && !r.Unstable, "tagged tidy unstable at seed " + seed);
+                Clearance(r, obstacles, "tagged tidy " + seed);
+                foreach (var p in r.GroupBoxes) Assert(Whole(p.Value.X - footprints[p.Key].X) && Whole(p.Value.Y - footprints[p.Key].Y), "fractional tag translation");
+                var appliedRaw = raw.ToDictionary(p => p.Key, p => FormatAllSolver.Translate(p.Value,
+                    LayoutSolver.Round(r.GroupBoxes[p.Key].X - footprints[p.Key].X), LayoutSolver.Round(r.GroupBoxes[p.Key].Y - footprints[p.Key].Y)));
+                var again = GroupTidy.Solve(r.GroupBoxes, obstacles, new Options(), null, appliedRaw);
+                Assert(again.Success && !again.Unstable && r.GroupBoxes.All(p =>
+                    Math.Abs(p.Value.X - again.GroupBoxes[p.Key].X) < 1e-7 && Math.Abs(p.Value.Y - again.GroupBoxes[p.Key].Y) < 1e-7),
+                    "tagged tidy not fixed at seed " + seed);
+            }
+        });
+        Check("Format all fixed nested group tags obstruct tidy and rigid groups reserve tags", () => {
+            var fixedRoot = new FormatAllTarget { Id = Id(100), Fixed = true, Bounds = new Box(0, 150, 80, 80),
+                RigidGroupBoxes = new Dictionary<Guid, Box> { [Id(100)] = new Box(0, 150, 80, 80), [Id(102)] = new Box(0, 150, 80, 40) } };
+            var moving = new FormatAllTarget { Id = Id(101), Bounds = new Box(170, 80, 80, 40), SkipReason = "rigid fixture",
+                RigidMembers = new[] { new NonNodeMember { Id = Id(1), Bounds = new Box(170, 80, 80, 40) } } };
+            var s = new FormatAllSnapshot { Targets = new[] { fixedRoot, moving },
+                GroupTags = new Dictionary<Guid, Vec2> { [Id(102)] = new Vec2(401, 60), [moving.Id] = new Vec2(101, 31) } };
+            var r = FormatAllSolver.Solve(s).Layout;
+            Assert(r.Success && !r.Unstable, r.Diagnostic);
+            Assert(r.GroupBoxes[moving.Id].Y - 31 - fixedRoot.Bounds.Bottom >= s.Options.GroupGapY, "fixed child tag did not obstruct");
+            Assert(!r.GroupBoxes.ContainsKey(fixedRoot.Id) && r.Tops.Count == 1, "fixed target moved");
+            Assert(r.GroupBoxes[moving.Id].Width == 80 && r.GroupBoxes[moving.Id].Height == 40, "rigid output is not raw box");
+            foreach (var move in r.Moves) Assert(Whole(move.Pivot.X - 170) && Whole(move.Pivot.Y - 80), "fractional rigid move");
+        });
         Check("Format all inner solves retain distinct island left edges while stripping outside X", () => {
             var a = TestNode(1, 50, 0); var b = TestNode(2, 200, 80);
             var c = TestNode(3, 550, 200); var d = TestNode(4, 700, 280);
@@ -222,6 +342,13 @@ internal static class FormatAllTests
             Assert(r.Layout.Success && r.Formatted == 2 && r.Skipped == 0 && r.Layout.Tops.Count == 2,"label overlap refused or duplicated a node");
             Assert(r.Layout.GroupBoxes[label.Id].X == r.Layout.Tops[b.Id].X - 3,"label did not follow node");
             StableAll(s,r.Layout,"label overlap");
+            label.TagSize = new Vec2(501, 80);
+            var named = FormatAllSolver.Solve(s);
+            Assert(named.Layout.Success && named.Formatted == 2 && named.Skipped == 0 && named.Layout.Tops.Count == 2, "named alias refused or duplicated node");
+            Assert(Coordinates(named.Layout) == Coordinates(r.Layout), "named alias changed independent tidy footprints");
+            Assert(named.Layout.GroupBoxes[label.Id].X == named.Layout.Tops[b.Id].X - 3 &&
+                named.Layout.GroupBoxes[label.Id].Y == named.Layout.Tops[b.Id].Y - 4, "named alias stopped following node");
+            WholeMoves(s, named.Layout, "named alias"); StableAll(s, named.Layout, "named alias");
         });
         Check("Skipped inner solve moves rigidly with untouched relative contents and whole deltas", () => {
             var a = TestNode(100,10,20); var b = TestNode(101,20,30);
@@ -456,13 +583,13 @@ internal static class FormatAllTests
     }
     private static Node TestNode(int id, double x, double y) => new Node { Id = Id(id), CurrentTop = new Vec2(x,y), Width = 80,Height = 40,
         Inputs = new[] { new Vec2(0,10) }, Outputs = new[] { new Vec2(80,10) } };
-    private static FormatAllSnapshot Reapply(FormatAllSnapshot s, Result r) => new FormatAllSnapshot { Options = s.Options, Obstacles = s.Obstacles,
+    private static FormatAllSnapshot Reapply(FormatAllSnapshot s, Result r) => new FormatAllSnapshot { Options = s.Options, Obstacles = s.Obstacles, GroupTags = s.GroupTags,
         Targets = s.Targets.Select(t => new FormatAllTarget { Id = t.Id, Label = t.Label, Bounds = r.GroupBoxes[t.Id], Fixed = t.Fixed,
             SkipReason = t.SkipReason, Hierarchy = Applied(t.Hierarchy,r) }).ToArray() };
 
     private static HierarchySnapshot Applied(HierarchySnapshot s, Result r)
     {
-        HierarchyGroup Group(HierarchyGroup g) => new HierarchyGroup { Id = g.Id, Label = g.Label, Padding = g.Padding, Locked = g.Locked,
+        HierarchyGroup Group(HierarchyGroup g) => new HierarchyGroup { Id = g.Id, Label = g.Label, Padding = g.Padding, Locked = g.Locked, TagSize = g.TagSize,
             Nodes = g.Nodes.Select(n => new Node { Id = n.Id, Label = n.Label, CurrentTop = r.Tops[n.Id], PivotOffset = n.PivotOffset,
                 Kind = n.Kind, Widget = n.Widget, Width = n.Width, Height = n.Height, Inputs = n.Inputs, Outputs = n.Outputs }).ToArray(),
             NonNodes = g.NonNodes.Select(n => new NonNodeMember { Id = n.Id, Label = n.Label, PivotOffset = n.PivotOffset,

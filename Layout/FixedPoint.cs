@@ -51,7 +51,7 @@ namespace HopperFormat.Layout
                 var previous = new List<Node>();
                 foreach (var island in islands)
                 {
-                    double currentMin = island.Min(n => n.CurrentTop.Y);
+                    double currentMin = island.Min(n => n.CurrentTop.Y - n.Reserve.Top);
                     // Island envelopes also contain independently rounded bounds.
                     // Recover near-tight island contacts without accumulating their
                     // rounding errors across every island in the selection.
@@ -62,12 +62,12 @@ namespace HopperFormat.Layout
                     bool islandWindows = ColumnWindows.HasOutsideX(graph, island);
                     var placed = Reconstruct(graph, island, ranks, islandX);
                     if (placed == null) return false;
-                    double minX = island.Min(n => placed[n.Id].X), minY = island.Min(n => placed[n.Id].Y);
+                    double minX = island.Min(n => placed[n.Id].X), minY = island.Min(n => placed[n.Id].Y - (previousBottom.HasValue ? n.Reserve.Top : 0));
                     foreach (var node in island)
                         raw[node.Id] = new Vec2(placed[node.Id].X + (islandWindows ? 0 : islandX - minX), placed[node.Id].Y + y - minY);
-                    y = island.Max(n => raw[n.Id].Y + n.Height) + Placement.IslandGap(graph, island, islands.SkipWhile(i => i != island).Skip(1).FirstOrDefault() ?? new List<Node>());
+                    y = island.Max(n => raw[n.Id].Y + n.Height + n.Reserve.Bottom) + Placement.IslandGap(graph, island, islands.SkipWhile(i => i != island).Skip(1).FirstOrDefault() ?? new List<Node>());
                     previous = island;
-                    previousBottom = island.Max(n => n.CurrentTop.Y + n.Height);
+                    previousBottom = island.Max(n => n.CurrentTop.Y + n.Height + n.Reserve.Bottom);
                 }
             }
             // Require a common horizontal rounding translation within each island
@@ -107,8 +107,8 @@ namespace HopperFormat.Layout
                 double y = from.CurrentTop.Y + from.Outputs[edge.FromPort].Y;
                 if (Math.Abs(y - to.CurrentTop.Y - to.Inputs[edge.ToPort].Y) > 1) continue;
                 if (!members.Any(n => ranks[n.Id] > ranks[edge.From] && ranks[n.Id] < ranks[edge.To] &&
-                    y > n.CurrentTop.Y - graph.Options.GapY + 1 + 1e-8 &&
-                    y < n.CurrentTop.Y + n.Height + graph.Options.GapY - 1 - 1e-8)) yield return edge;
+                    y > n.CurrentTop.Y - n.Reserve.Top - graph.Options.GapY + 1 + 1e-8 &&
+                    y < n.CurrentTop.Y + n.Height + n.Reserve.Bottom + graph.Options.GapY - 1 - 1e-8)) yield return edge;
             }
         }
 

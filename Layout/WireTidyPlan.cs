@@ -13,7 +13,11 @@ namespace HopperFormat.Layout
             internal Box Bounds;
         }
 
+        // Layout footprints (including group tags), never the raw output group boxes.
+        // Wire bounds use changes in these origins, so rigid translations stay valid.
         internal Dictionary<Guid, Box> Boxes;
+        // The pre-tag layout box, including satellites as on main.
+        internal Dictionary<Guid, Box> AlignmentBoxes;
         internal List<Box> Obstacles;
         internal readonly List<Satellite> Satellites = new List<Satellite>();
         private readonly Dictionary<Guid, Guid> owners = new Dictionary<Guid, Guid>();
@@ -25,9 +29,11 @@ namespace HopperFormat.Layout
 
         internal static WireTidyPlan Create(FormatAllSnapshot snapshot, (Guid Id, Result Result)[] solved,
             Dictionary<Guid, Dictionary<Guid, NonNodeMember>> members, Dictionary<Guid, Box> boxes, List<Box> obstacles,
-            IReadOnlyDictionary<Guid, Guid> aliases, IReadOnlyDictionary<Guid, Guid[]> nodeIds)
+            IReadOnlyDictionary<Guid, Guid> aliases, IReadOnlyDictionary<Guid, Guid[]> nodeIds,
+            IReadOnlyDictionary<Guid, Box> alignmentBoxes)
         {
-            var plan = new WireTidyPlan { Boxes = new Dictionary<Guid, Box>(boxes), Obstacles = obstacles.ToList() };
+            var plan = new WireTidyPlan { Boxes = new Dictionary<Guid, Box>(boxes),
+                AlignmentBoxes = alignmentBoxes.ToDictionary(p => p.Key, p => p.Value), Obstacles = obstacles.ToList() };
             foreach (var root in solved.OrderBy(s => s.Id))
                 foreach (var p in root.Result.Tops)
                     if (!plan.owners.ContainsKey(p.Key))
@@ -97,6 +103,7 @@ namespace HopperFormat.Layout
                 var group = plan.Boxes[roots[0]];
                 double x = Math.Min(group.X, b.X), y0 = Math.Min(group.Y, b.Y);
                 plan.Boxes[roots[0]] = new Box(x, y0, Math.Max(group.Right, b.Right) - x, Math.Max(group.Bottom, b.Bottom) - y0);
+                plan.AlignmentBoxes[roots[0]] = GroupFootprint.Union(plan.AlignmentBoxes[roots[0]], b);
             }
             plan.initial = new Dictionary<Guid, Box>(plan.Boxes);
             foreach (var w in snapshot.Wires)

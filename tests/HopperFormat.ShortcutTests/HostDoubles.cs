@@ -7,6 +7,11 @@ using System.Linq;
 
 namespace Grasshopper.Kernel
 {
+    internal static class GH_FontServer
+    {
+        internal static object StandardAdjusted { get; } = new object();
+        internal static Size MeasureString(string text, object font) => new Size(text.Length * 7, 13);
+    }
     internal enum GH_ProcessStep { PreProcess, Process, PostProcess }
     internal enum GH_ParamKind { input, output, floating }
     internal interface IGH_DocumentObject

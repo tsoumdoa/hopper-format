@@ -16,8 +16,9 @@ internal static class HierarchyTests
         Id = Id(id), Label = "'G" + id + "'", Nodes = nodes, Children = children, Padding = new Padding(10, 20, 12, 14) };
     private static IEnumerable<Node> Nodes(HierarchyGroup g) => g.Nodes.Concat(g.Children.SelectMany(Nodes)).GroupBy(n => n.Id).Select(a => a.First());
     private static IEnumerable<HierarchyGroup> Groups(HierarchyGroup g) => new[] { g }.Concat(g.Children.SelectMany(Groups));
-    // Fixtures never share a labelled node with an unrelated group, so notes alone decide.
-    private static bool SeeThrough(HierarchyGroup g) => Nodes(g).Count() == 1 && !Groups(g).SelectMany(c => c.NonNodes).Any();
+    // Geometry fixtures do not share a labelled node with an unrelated group.
+    private static bool SeeThrough(HierarchyGroup g) => Nodes(g).Count() == 1 &&
+        !Groups(g).SelectMany(c => c.NonNodes).Any() && (g.TagSize.X <= 0 || g.TagSize.Y <= 0);
     private static void Assert(bool ok, string message) { if (!ok) throw new Exception(message); }
     private static void Near(double a, double b, string message) => Assert(Math.Abs(a - b) < 1e-7, message + ": " + a + " != " + b);
     private static void Check(string name, Action test)
@@ -29,7 +30,7 @@ internal static class HierarchyTests
     private static HierarchySnapshot Applied(HierarchySnapshot s, Result r, Random shuffle = null)
     {
         T[] Order<T>(IEnumerable<T> items) => shuffle == null ? items.ToArray() : items.OrderBy(_ => shuffle.Next()).ToArray();
-        HierarchyGroup Copy(HierarchyGroup g) => new HierarchyGroup { Id = g.Id, Label = g.Label, Padding = g.Padding, Locked = g.Locked,
+        HierarchyGroup Copy(HierarchyGroup g) => new HierarchyGroup { Id = g.Id, Label = g.Label, Padding = g.Padding, Locked = g.Locked, TagSize = g.TagSize,
             Nodes = Order(g.Nodes.Select(n => AppliedNode(n, r))), Children = Order(g.Children.Select(Copy)),
             NonNodes = Order(g.NonNodes.Select(n => new NonNodeMember { Id = n.Id, Label = n.Label, PivotOffset = n.PivotOffset,
                 Bounds = new Box(r.Tops[n.Id].X, r.Tops[n.Id].Y, n.Bounds.Width, n.Bounds.Height) })) };
@@ -48,6 +49,249 @@ internal static class HierarchyTests
 
     internal static int Run()
     {
+        Check("Hierarchy aligned raw column stays fixed with a wider tag in either Guid order", () => {
+            foreach (bool namedFirst in new[] { false, true }) {
+                var upper = new HierarchyGroup { Id = Id(100), Nodes = new[] { N(1), N(2, 0, 56) },
+                    TagSize = namedFirst ? new Vec2(251, 31) : default };
+                double y = namedFirst ? 136 : 167;
+                var lower = new HierarchyGroup { Id = Id(101), Nodes = new[] { N(3, 0, y), N(4, 0, y + 56) },
+                    TagSize = namedFirst ? default : new Vec2(251, 31) };
+                var s = new HierarchySnapshot { Groups = new[] { upper, lower } };
+                var r = Solve(s);
+                Assert(r.Moves.Count == 0, "wide tag moved aligned raw boxes");
+                Near(r.GroupBoxes[upper.Id].X, 0, "upper raw left");
+                Near(r.GroupBoxes[lower.Id].X, 0, "lower raw left");
+                Stable(s, r);
+            }
+        });
+        Check("Hierarchy lower group tag receives GroupGapY above its footprint", () => {
+            var upper = G(100, new[] { N(1), N(2, 0, 80) });
+            var lower = G(101, new[] { N(3, 0, 300), N(4, 0, 380) });
+            var s = new HierarchySnapshot { Groups = new[] { upper, lower } };
+            var plain = Solve(s);
+            Near(plain.GroupBoxes[lower.Id].Y - plain.GroupBoxes[upper.Id].Bottom, s.Options.GroupGapY, "untagged gap");
+            lower.TagSize = new Vec2(41, 37);
+            var r = Solve(s);
+            Near(r.GroupBoxes[lower.Id].Y - r.GroupBoxes[upper.Id].Bottom, s.Options.GroupGapY + 37, "tagged gap");
+            Near(r.GroupBoxes[lower.Id].Height, plain.GroupBoxes[lower.Id].Height, "raw height");
+            Stable(s, r);
+        });
+        Check("Hierarchy connected columns align raw left or right edges and clear incoming wide tags", () => {
+            foreach (bool mixed in new[] { false, true }) {
+                var a = N(1); var b = N(2, 0, 56);
+                var c = N(3, 400); var d = N(4, 400, 56); var e = N(5, 400, 400, 140); var f = N(6, 400, 456, 140);
+                var source = G(100, new[] { a, b });
+                var tagged = G(101, new[] { c, d }); tagged.TagSize = new Vec2(301, 31);
+                var peer = G(102, new[] { e, f });
+                var s = new HierarchySnapshot { Groups = mixed ? new[] { source, tagged } : new[] { source, tagged, peer },
+                    LooseNodes = mixed ? new[] { e } : Array.Empty<Node>(), Edges = new[] { E(b, c), E(b, e) } };
+                var r = Solve(s);
+                if (mixed) Near(r.GroupBoxes[tagged.Id].Right, r.Tops[e.Id].X + e.Width, "raw right alignment");
+                else Near(r.GroupBoxes[tagged.Id].X, r.GroupBoxes[peer.Id].X, "raw left alignment");
+                Assert(r.GroupFootprints[tagged.Id].X - r.GroupFootprints[source.Id].Right >= s.Options.GroupGapX - 1,
+                    "next column's left tag margin lost");
+                WholeUnitMoves(s, r); Stable(s, r);
+            }
+        });
+        Check("Tagged random hierarchies retain fixed points and whole moves across 300 seeds", () => {
+            for (int seed = 0; seed < 300; seed++) {
+                try {
+                    var s = RandomTree(seed);
+                    foreach (var g in s.Groups.SelectMany(Groups))
+                        if ((g.Id.GetHashCode() + seed) % 3 != 0) g.TagSize = new Vec2(101 + (seed % 7) * 73, 21 + seed % 31);
+                    var tops = s.Groups.SelectMany(Nodes).Concat(s.LooseNodes).GroupBy(n => n.Id).Select(g => g.First()).ToDictionary(n => n.Id,
+                        n => new Vec2(LayoutSolver.Round(n.CurrentTop.X + n.PivotOffset.X) - n.PivotOffset.X,
+                            LayoutSolver.Round(n.CurrentTop.Y + n.PivotOffset.Y) - n.PivotOffset.Y));
+                    foreach (var note in s.Groups.SelectMany(Groups).SelectMany(g => g.NonNodes)) tops[note.Id] = new Vec2(note.Bounds.X, note.Bounds.Y);
+                    s = Applied(s, new Result { Tops = tops });
+                    var r = Solve(s); WholeUnitMoves(s, r); Stable(s, r); Geometry(s, r);
+                } catch (Exception e) { throw new Exception("tagged seed " + seed + ": " + e.Message); }
+            }
+        });
+        Check("Hierarchy wide odd tag clears neighbouring column with whole moves", () => {
+            var a = N(1); var b = N(2, 0, 80); var c = N(3, 400); var d = N(4, 400, 80);
+            var left = G(100, new[] { a, b }); left.TagSize = new Vec2(253, 29);
+            var right = G(101, new[] { c, d });
+            var s = new HierarchySnapshot { Groups = new[] { left, right }, Edges = new[] { E(b, c) } };
+            var r = Solve(s);
+            var footprint = GroupFootprint.IncludeTag(r.GroupBoxes[left.Id], left.TagSize);
+            Assert(r.GroupBoxes[right.Id].X - footprint.Right >= s.Options.GroupGapX - 1e-7, "tag lacks horizontal clearance");
+            foreach (var n in new[] { a, b, c, d }) {
+                Near(r.Tops[n.Id].X - n.CurrentTop.X, Math.Round(r.Tops[n.Id].X - n.CurrentTop.X), "whole X delta");
+                Near(r.Tops[n.Id].Y - n.CurrentTop.Y, Math.Round(r.Tops[n.Id].Y - n.CurrentTop.Y), "whole Y delta");
+            }
+            Stable(s, r);
+        });
+        Check("Hierarchy tagged group-to-loose link retains measured grip alignment", () => {
+            var a = N(1, 30, 60); var b = N(2, 180, 100); var c = N(3, 450, 30);
+            var group = G(100, new[] { a, b }); group.TagSize = new Vec2(401, 35);
+            var s = new HierarchySnapshot { Groups = new[] { group }, LooseNodes = new[] { c }, Edges = new[] { E(a, b), E(b, c) } };
+            var r = Solve(s);
+            Near(r.Tops[b.Id].Y + b.Outputs[0].Y, r.Tops[c.Id].Y + c.Inputs[0].Y, "tagged measured grips");
+            Assert(r.Tops[c.Id].X - GroupFootprint.IncludeTag(r.GroupBoxes[group.Id], group.TagSize).Right >= s.Options.GroupGapX,
+                "tag-to-node clearance");
+            Stable(s, r);
+        });
+        Check("Hierarchy protruding child tag expands parent footprint without expanding raw box", () => {
+            var child = G(101, new[] { N(1), N(2, 0, 80) }); child.TagSize = new Vec2(301, 60);
+            var parent = G(100, Array.Empty<Node>(), child);
+            var other = G(102, new[] { N(3, 0, 400), N(4, 0, 480) });
+            var s = new HierarchySnapshot { Groups = new[] { other, parent } };
+            var r = Solve(s); var raw = r.GroupBoxes[parent.Id]; var childRaw = r.GroupBoxes[child.Id];
+            Near(raw.Y, childRaw.Y - parent.Padding.Top, "raw parent top");
+            Near(r.GroupFootprints[parent.Id].Y, childRaw.Y - 60, "outer tag top");
+            Near(r.GroupFootprints[parent.Id].X, childRaw.X + (childRaw.Width - 301) / 2, "outer tag left");
+            Assert(r.GroupBoxes[other.Id].Y - raw.Bottom >= s.Options.GroupGapY, "parent spacing lost");
+            Stable(s, r);
+        });
+        Check("Hierarchy named single-node roots clear both tags in either Guid order", () => {
+            foreach (bool reversed in new[] { false, true }) {
+                var upper = G(reversed ? 101 : 100, new[] { N(1, 0, 0) });
+                var lower = G(reversed ? 100 : 101, new[] { N(2, 0, 60) });
+                foreach (var g in new[] { upper, lower }) {
+                    g.Padding = new Padding(9, 9, 9, 9); g.TagSize = new Vec2(131, 31);
+                }
+                var s = new HierarchySnapshot { Groups = new[] { lower, upper } };
+                var r = Solve(s);
+                Box Tag(HierarchyGroup g) { var b = r.GroupBoxes[g.Id]; return new Box(b.X + (b.Width - g.TagSize.X) / 2,
+                    b.Y - g.TagSize.Y, g.TagSize.X, g.TagSize.Y); }
+                Assert(!Overlap(r.GroupBoxes[upper.Id], Tag(lower)) && !Overlap(r.GroupBoxes[lower.Id], Tag(upper)), "box overlaps other tag");
+                Near(Tag(lower).Y - r.GroupBoxes[upper.Id].Bottom, s.Options.GapY, "box-to-tag gap");
+                Near(r.GroupBoxes[lower.Id].Y - r.GroupBoxes[upper.Id].Bottom, 47, "raw box gap");
+                Near(r.GroupFootprints[lower.Id].Y, Tag(lower).Y, "label tag reserved");
+                WholeUnitMoves(s, r); Stable(s, r);
+                Assert(Fingerprint(r) == Fingerprint(Solve(new HierarchySnapshot { Groups = s.Groups.Reverse().ToArray() })), "root enumeration changed layout");
+            }
+        });
+        Check("Hierarchy three tag-only labels use node gaps unconnected and in wired columns in either Guid order", () => {
+            foreach (bool wired in new[] { false, true }) foreach (bool reversed in new[] { false, true }) {
+                var nodes = Enumerable.Range(0, 3).Select(i => N(i + 1, 200, i * 100)).ToArray();
+                var labels = nodes.Select((n, i) => G(100 + (reversed ? 2 - i : i), new[] { n })).ToArray();
+                foreach (var label in labels) { label.Padding = new Padding(9, 9, 9, 9); label.TagSize = new Vec2(198, 31); }
+                var source = N(4); var sink = N(5, 400);
+                // Three source -> label -> sink chains share their middle column.
+                var s = new HierarchySnapshot { Groups = labels.Reverse().ToArray(),
+                    LooseNodes = wired ? new[] { source, sink } : Array.Empty<Node>(),
+                    Edges = wired ? nodes.SelectMany(n => new[] { E(source, n), E(n, sink) }).ToArray() : Array.Empty<Edge>() };
+                var r = Solve(s);
+                for (int i = 1; i < labels.Length; i++) {
+                    var upper = r.GroupBoxes[labels[i - 1].Id]; var lower = r.GroupBoxes[labels[i].Id];
+                    Near(lower.Y - labels[i].TagSize.Y - upper.Bottom, s.Options.GapY, "three-label box-to-tag gap");
+                    Near(lower.Y - upper.Bottom, 47, "three-label raw box gap");
+                    Near(lower.X, upper.X, "shared raw column");
+                    Assert(!Overlap(r.GroupFootprints[labels[i - 1].Id], r.GroupFootprints[labels[i].Id]), "label footprints overlap");
+                }
+                WholeUnitMoves(s, r); Stable(s, r); Geometry(s, r);
+                var shuffled = new HierarchySnapshot { Groups = s.Groups.Reverse().ToArray(), LooseNodes = s.LooseNodes.Reverse().ToArray(),
+                    Edges = s.Edges.Reverse().ToArray() };
+                Assert(Fingerprint(r) == Fingerprint(Solve(shuffled)), "enumeration changed three-label layout");
+            }
+        });
+        Check("Hierarchy tag-only label and plain nodes use node gaps on both sides in a wired column", () => {
+            var source = N(1); var upper = N(2, 200); var middle = N(3, 200, 100); var lower = N(4, 200, 200);
+            var label = G(100, new[] { middle }); label.TagSize = new Vec2(198, 31);
+            var s = new HierarchySnapshot { Groups = new[] { label }, LooseNodes = new[] { source, upper, lower },
+                Edges = new[] { E(source, upper), E(source, middle), E(source, lower) } };
+            var r = Solve(s); var b = r.GroupBoxes[label.Id];
+            Near(b.Y - 31 - Placed(upper, r).Bottom, s.Options.GapY, "plain-to-tag gap");
+            Near(Placed(lower, r).Y - b.Bottom, s.Options.GapY, "label-to-plain gap");
+            WholeUnitMoves(s, r); Stable(s, r); Geometry(s, r);
+        });
+        Check("Hierarchy tag-only labels next to real groups keep group gaps vertically and horizontally", () => {
+            foreach (bool labelFirst in new[] { false, true }) foreach (bool horizontal in new[] { false, true }) {
+                var labelNode = N(1, labelFirst ? 0 : 400, labelFirst ? 0 : 400);
+                var a = N(2, labelFirst ? 400 : 0, labelFirst ? 400 : 0);
+                var b = N(3, a.CurrentTop.X, a.CurrentTop.Y + 56);
+                var label = G(100, new[] { labelNode }); label.Padding = new Padding(9, 9, 9, 9); label.TagSize = new Vec2(198, 31);
+                var real = G(101, new[] { a, b });
+                var s = new HierarchySnapshot { Groups = new[] { real, label }, Edges = horizontal
+                    ? new[] { labelFirst ? E(labelNode, a) : E(a, labelNode) } : Array.Empty<Edge>() };
+                var r = Solve(s); var footprint = r.GroupFootprints[label.Id]; var box = r.GroupBoxes[real.Id];
+                if (horizontal) Near(labelFirst ? box.X - footprint.Right : footprint.X - box.Right,
+                    s.Options.GroupGapX, "real-group horizontal clearance from tag");
+                else Near(labelFirst ? box.Y - footprint.Bottom : footprint.Y - box.Bottom,
+                    s.Options.GroupGapY, "real-group vertical clearance from tag");
+                WholeUnitMoves(s, r); Stable(s, r); Geometry(s, r);
+            }
+        });
+        Check("Hierarchy labels with notes keep group gaps with and without tags", () => {
+            foreach (bool tagged in new[] { false, true }) foreach (bool horizontal in new[] { false, true }) {
+                var plain = N(1); var node = N(2, horizontal ? 300 : 0, 200);
+                var label = G(100, new[] { node }); label.Padding = new Padding(9, 9, 9, 9);
+                label.TagSize = tagged ? new Vec2(298, 31) : default;
+                label.NonNodes = new[] { new NonNodeMember { Id = Id(300), Label = "Label note",
+                    Bounds = new Box(node.CurrentTop.X, node.CurrentTop.Y + 50, 180, 30) } };
+                var s = new HierarchySnapshot { Groups = new[] { label }, LooseNodes = new[] { plain },
+                    Edges = horizontal ? new[] { E(plain, node) } : Array.Empty<Edge>() };
+                var r = Solve(s); var footprint = r.GroupFootprints[label.Id];
+                if (horizontal) Near(footprint.X - Placed(plain, r).Right, s.Options.GroupGapX, "note-label horizontal gap");
+                else Near(footprint.Y - Placed(plain, r).Bottom, s.Options.GroupGapY, "note-label vertical gap");
+                WholeUnitMoves(s, r); Stable(s, r); Geometry(s, r); NotesClear(s, r);
+            }
+        });
+        Check("Hierarchy adjacent plain columns clear both sides of a wide tag by GapX", () => {
+            var source = N(1); var node = N(2, 300); var sink = N(3, 600);
+            var label = G(100, new[] { node }); label.Padding = new Padding(9, 9, 9, 9); label.TagSize = new Vec2(298, 31);
+            var s = new HierarchySnapshot { Groups = new[] { label }, LooseNodes = new[] { source, sink },
+                Edges = new[] { E(source, node), E(node, sink) } };
+            var r = Solve(s); var footprint = r.GroupFootprints[label.Id]; var box = r.GroupBoxes[label.Id];
+            Near(footprint.Width, 298, "wide tag footprint"); Near(box.Width, 98, "raw box width");
+            Near(footprint.X - Placed(source, r).Right, s.Options.GapX, "plain-to-tag horizontal gap");
+            Near(Placed(sink, r).X - footprint.Right, s.Options.GapX, "tag-to-plain horizontal gap");
+            WholeUnitMoves(s, r); Stable(s, r); Geometry(s, r);
+        });
+        Check("Hierarchy separate tag-only label islands use node island gaps", () => {
+            var a = N(1); var b = N(2, 300); var c = N(3, 0, 400); var d = N(4, 300, 400);
+            var labels = new[] { a, b, c, d }.Select((n, i) => G(100 + i, new[] { n })).ToArray();
+            foreach (var label in labels) { label.Padding = new Padding(9, 9, 9, 9); label.TagSize = new Vec2(198, 31); }
+            var s = new HierarchySnapshot { Groups = labels, Edges = new[] { E(a, b), E(c, d) } };
+            var r = Solve(s);
+            double upperBottom = labels.Take(2).Max(g => r.GroupFootprints[g.Id].Bottom);
+            double lowerTop = labels.Skip(2).Min(g => r.GroupFootprints[g.Id].Y);
+            Near(lowerTop - upperBottom, 2 * s.Options.GapY, "node island gap");
+            WholeUnitMoves(s, r); Stable(s, r); Geometry(s, r);
+        });
+        Check("Hierarchy named nested label clears a sibling directly above its tag", () => {
+            var sibling = N(1); var node = N(2, 0, 60);
+            var label = G(101, new[] { node }); label.Padding = new Padding(9, 9, 9, 9); label.TagSize = new Vec2(131, 31);
+            var s = new HierarchySnapshot { Groups = new[] { G(100, new[] { sibling }, label) } };
+            var r = Solve(s); var b = r.GroupBoxes[label.Id];
+            var tag = new Box(b.X + (b.Width - label.TagSize.X) / 2, b.Y - label.TagSize.Y, label.TagSize.X, label.TagSize.Y);
+            Assert(!Overlap(Placed(sibling, r), tag), "sibling overlaps nested tag");
+            Near(tag.Y - Placed(sibling, r).Bottom, s.Options.GapY, "sibling-to-tag gap");
+            WholeUnitMoves(s, r); Stable(s, r); Geometry(s, r);
+        });
+        Check("Hierarchy unnamed labels keep identical bare-node layout", () => {
+            var label = G(100, new[] { N(1) });
+            var s = new HierarchySnapshot { Groups = new[] { label }, LooseNodes = new[] { N(2, 0, 200) } };
+            var r = Solve(s);
+            var bare = LayoutSolver.Solve(new Snapshot { Nodes = label.Nodes.Concat(s.LooseNodes).ToArray(), Options = s.Options });
+            Assert(bare.Success && Fingerprint(bare) == Fingerprint(r), "unnamed label changed node layout");
+            Stable(s, r);
+        });
+        Check("Hierarchy named shared labels keep following their node", () => {
+            var a = N(1, 0, 0); var b = N(2, 0, 60); var loose = N(3, 0, 300);
+            var root = G(100, new[] { a, b }); var label = G(101, new[] { b });
+            var s = new HierarchySnapshot { Groups = new[] { root, label }, LooseNodes = new[] { loose }, Edges = new[] { E(a, b) } };
+            var plain = Solve(s); label.TagSize = new Vec2(501, 80); var tagged = Solve(s);
+            Assert(Fingerprint(plain) == Fingerprint(tagged), "shared tag changed node layout");
+            Near(tagged.GroupBoxes[label.Id].X, tagged.Tops[b.Id].X - label.Padding.Left, "shared label follows node X");
+            Near(tagged.GroupBoxes[label.Id].Y, tagged.Tops[b.Id].Y - label.Padding.Top, "shared label follows node Y");
+            Near(tagged.GroupFootprints[label.Id].Y, tagged.GroupBoxes[label.Id].Y, "shared tag must remain unreserved");
+            WholeUnitMoves(s, tagged); Stable(s, tagged);
+        });
+        Check("Hierarchy named param label keeps its last column and node right alignment", () => {
+            var source = N(1); var middle = N(2, 200); var last = N(3, 400, 100, 140);
+            var output = N(4, 200, 250, 50, 20); output.Kind = NodeKind.Param;
+            var label = G(100, new[] { output }); label.TagSize = new Vec2(251, 31);
+            var s = new HierarchySnapshot { Groups = new[] { label }, LooseNodes = new[] { source, middle, last },
+                Edges = new[] { E(source, middle), E(middle, last), E(source, output) } };
+            var r = Solve(s);
+            Near(Placed(output, r).Right, Placed(last, r).Right, "named output right alignment in last column");
+            Assert(r.Tops[output.Id].X > Placed(middle, r).Right, "named output lost param role");
+            Near(r.GroupFootprints[label.Id].Y, r.GroupBoxes[label.Id].Y - 31, "param tag reserved");
+            WholeUnitMoves(s, r); Stable(s, r);
+        });
         Check("Hierarchy moving child levels retain distinct island left edges", () => {
             var a = N(1, 0, 0); var b = N(2, 150, 80);
             var c = N(3, 400, 0); var d = N(4, 600, 80);

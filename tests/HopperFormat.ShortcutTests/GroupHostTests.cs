@@ -14,6 +14,26 @@ internal static class GroupHostTests
     { try { test(); Console.WriteLine("PASS " + name); } catch (Exception e) { failures++; Console.WriteLine("FAIL " + name + ": " + e.Message); } }
     internal static int Run()
     {
+        Check("Group tag capture measures captions once through the shared host helper", () => {
+            var group = new GH_Group { NickName = " \t\r\n" };
+            var size = GroupTag.Measure(group);
+            Assert(size.X == 0 && size.Y == 0, "whitespace caption reserved space");
+            group.NickName = "Caption";
+            size = GroupTag.Measure(group);
+            Assert(size.X == 55 && size.Y == 21, "balloon padding or pointer missing");
+            var doc = new GH_Document(); var a = new TestComponent(); var b = new TestComponent();
+            group.Document = doc; group.ObjectIDs.AddRange(new[] { a.InstanceGuid, b.InstanceGuid });
+            doc.Objects.AddRange(new IGH_DocumentObject[] { a, b, group });
+            var selected = SelectionSnapshot.Capture(doc, new Options(), new[] { group });
+            Assert(selected.Hierarchy.Groups.Single().TagSize.X == size.X && selected.Hierarchy.Groups.Single().TagSize.Y == size.Y,
+                "selected hierarchy lost measured tag");
+            var locked = new GH_Group { NickName = "[lock]", Document = doc };
+            locked.ObjectIDs.Add(group.InstanceGuid); doc.Objects.Add(locked);
+            var all = FormatAllCapture.Capture(doc, new Options());
+            Assert(all.Snapshot.GroupTags[group.InstanceGuid].X == size.X && all.Snapshot.GroupTags[locked.InstanceGuid].Y == size.Y
+                && all.Snapshot.Targets.Single().Fixed && all.Snapshot.Targets.Single().RigidGroupBoxes.ContainsKey(group.InstanceGuid),
+                "fixed nested tag or raw box was not captured");
+        });
         Check("Group member excluded from node set has symmetric external wire hints", () => {
             var doc = new GH_Document(); var a = new TestComponent(); var formatter = new HopperFormatComponent();
             var group = new GH_Group { NickName = "Pipeline", Document = doc };

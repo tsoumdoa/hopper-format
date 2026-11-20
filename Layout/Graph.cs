@@ -52,6 +52,9 @@ namespace HopperFormat.Layout
             {
                 if (!Finite(node.Width) || !Finite(node.Height) || node.Width <= 0 || node.Height <= 0)
                     return Fail("Non-positive or non-finite size for " + MessageLabel(node) + ".", out diagnostic);
+                var reserve = node.Reserve;
+                if (new[] { reserve.Left, reserve.Top, reserve.Right, reserve.Bottom }.Any(v => !Finite(v) || v < 0))
+                    return Fail("Invalid clearance reserve for " + MessageLabel(node) + ".", out diagnostic);
                 if (!Finite(node.CurrentTop) || !Finite(node.PivotOffset) || node.Inputs == null || node.Outputs == null ||
                     node.Inputs.Any(p => !Finite(p)) || node.Outputs.Any(p => !Finite(p)))
                     return Fail("Invalid coordinates or grips for " + MessageLabel(node) + ".", out diagnostic);

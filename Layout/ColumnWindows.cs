@@ -127,10 +127,15 @@ namespace HopperFormat.Layout
                 bool leftAligned = unconnected || columns[c].All(Placement.PureGroup);
                 double edge = columns[c].Select(Placement.AlignEdge).DefaultIfEmpty(0).Max();
                 foreach (var n in columns[c]) { g.Indent.Add(n.Id, leftAligned ? 0 : edge - Placement.AlignEdge(n)); columnOf.Add(n.Id, c); }
-                double width = columns[c].Select(n => g.Indent[n.Id] + n.Width).DefaultIfEmpty(0).Max();
-                if (c + 1 < columns.Length)
-                    g.Packed[c + 1] = g.Packed[c] + width +
-                        (columns[c].Concat(columns[c + 1]).Any(n => n.Kind == NodeKind.Group) ? graph.Options.GroupGapX : graph.Options.GapX);
+            }
+            for (int c = 0; c + 1 < columns.Length; c++)
+            {
+                // Align on raw edges above, then separate the full clearance
+                // envelopes on both sides of the inter-column gap.
+                double width = columns[c].Select(n => g.Indent[n.Id] + n.Width + n.Reserve.Right).DefaultIfEmpty(0).Max();
+                double nextLeft = columns[c + 1].Select(n => g.Indent[n.Id] - n.Reserve.Left).DefaultIfEmpty(0).Min();
+                g.Packed[c + 1] = g.Packed[c] + width - nextLeft +
+                    (columns[c].Concat(columns[c + 1]).Any(Placement.GroupGaps) ? graph.Options.GroupGapX : graph.Options.GapX);
             }
             g.Left = g.Packed.Select(x => anchorX + x).ToArray();
             void Add(Guid id, double grip, double outside, bool lower)

@@ -4,13 +4,6 @@ using System.Linq;
 
 namespace HopperFormat.Layout
 {
-    public readonly struct Padding
-    {
-        public readonly double Left, Top, Right, Bottom;
-        public Padding(double left, double top, double right, double bottom)
-        { Left = left; Top = top; Right = right; Bottom = bottom; }
-    }
-
     public sealed class NonNodeMember
     {
         public Guid Id { get; set; }
@@ -28,6 +21,8 @@ namespace HopperFormat.Layout
         public IReadOnlyList<HierarchyGroup> Children { get; set; } = Array.Empty<HierarchyGroup>();
         public IReadOnlyList<NonNodeMember> NonNodes { get; set; } = Array.Empty<NonNodeMember>();
         public Padding Padding { get; set; }
+        // Balloon width and total height above the raw box, including its pointer.
+        public Vec2 TagSize { get; set; }
         public bool Locked { get; set; }
     }
 
@@ -158,6 +153,8 @@ namespace HopperFormat.Layout
                 var p = group.Padding;
                 if (new[] { p.Left, p.Top, p.Right, p.Bottom }.Any(v => !Graph.Finite(v) || v < 0))
                     throw new InvalidOperationException(group.Label + ": invalid padding.");
+                if (new[] { group.TagSize.X, group.TagSize.Y }.Any(v => !Graph.Finite(v) || v < 0))
+                    throw new InvalidOperationException(group.Label + ": invalid tag size.");
                 groups.Add(group.Id, group);
                 depths.Add(group.Id, path.Length);
                 var next = path.Concat(new[] { group.Id }).ToArray();
@@ -185,11 +182,13 @@ namespace HopperFormat.Layout
             // Ownership: a single-node group never creates a second layout owner.
             private bool LabelGroup(HierarchyGroup group) => members[group.Id].Count(nodes.ContainsKey) == 1;
             // Layout: a label is see-through only while its node's footprint is its whole
-            // visible content. Notes give it a footprint of its own, so it then reserves
-            // its box like a real group, unless a member also belongs to an unrelated
-            // group: that space is not the label's alone, so it follows its node instead.
+            // visible content. Notes or a name tag give it a footprint of its own,
+            // so it reserves its box like a real group, unless a member also belongs
+            // to an unrelated group: that space is not the label's alone, so it follows
+            // its node instead.
             private bool SeeThrough(HierarchyGroup group) => LabelGroup(group) &&
-                (!members[group.Id].Any(nonNodes.ContainsKey) || members[group.Id].Any(Shared));
+                ((!members[group.Id].Any(nonNodes.ContainsKey) && (group.TagSize.X <= 0 || group.TagSize.Y <= 0)) ||
+                    members[group.Id].Any(Shared));
             private bool Shared(Guid id)
             {
                 var paths = owners[id];
@@ -222,11 +221,18 @@ namespace HopperFormat.Layout
                 return originalBoxes[g.Id] = Pad(content, g.Padding);
             }
             private IEnumerable<HierarchyGroup> MeasurableChildren(HierarchyGroup g) => g.Children.Where(c => members[c.Id].Count > 0);
+            private Box Footprint(HierarchyGroup g, IReadOnlyDictionary<Guid, Box> rawBoxes)
+            {
+                // See-through labels retain their node's layout role and reserve no tag.
+                var b = GroupFootprint.IncludeTag(rawBoxes[g.Id], SeeThrough(g) ? default : g.TagSize);
+                foreach (var child in MeasurableChildren(g)) b = GroupFootprint.Union(b, Footprint(child, rawBoxes));
+                return b;
+            }
             private IEnumerable<HierarchyGroup> LayoutChildren(HierarchyGroup g) => MeasurableChildren(g)
                 .SelectMany(c => dissolved.Contains(c.Id) ? LayoutChildren(c) : new[] { c });
             private IEnumerable<HierarchyGroup> RealChildren(HierarchyGroup g) => LayoutChildren(g).Where(c => !SeeThrough(c));
-            // Labels affect the visible box (and therefore measured padding), but never
-            // compete as layout units. Keep those envelopes separate.
+            // See-through labels affect the visible box (and therefore measured padding),
+            // but never compete as layout units. Keep those envelopes separate.
             private IEnumerable<Guid> PhysicalIds(HierarchyGroup g)
             {
                 var indirect = new HashSet<Guid>(g.Children.SelectMany(c => members[c.Id]));
@@ -315,7 +321,9 @@ namespace HopperFormat.Layout
                     return new Move { Id = p.Key, Pivot = n == null ? pivot : new Vec2(LayoutSolver.Round(pivot.X), LayoutSolver.Round(pivot.Y)) };
                 }).ToArray();
                 return new Result { Success = true, Tops = new SortedDictionary<Guid, Vec2>(tops), Moves = moves,
-                    GroupBoxes = new SortedDictionary<Guid, Box>(boxes), Log = log.ToArray(), Notices = notices.ToArray(),
+                    GroupBoxes = new SortedDictionary<Guid, Box>(boxes),
+                    GroupFootprints = groups.Values.Where(g => boxes.ContainsKey(g.Id)).ToDictionary(g => g.Id, g => Footprint(g, boxes)),
+                    Log = log.ToArray(), Notices = notices.ToArray(),
                     DissolvedCount = dissolved.Count, Unstable = unstable, Rounds = rounds,
                     Anchor = originalUnits.Length == 0 ? new Vec2(0, 0) : new Vec2(originalUnits.Min(b => b.X), originalUnits.Min(b => b.Y)) };
             }
@@ -391,11 +399,13 @@ namespace HopperFormat.Layout
                     new Vec2(LayoutSolver.Round(b.X), LayoutSolver.Round(b.Y));
                 var u = new Unit { Members = members[g.Id], Node = new Node { Id = g.Id, Label = g.Label, Kind = NodeKind.Group,
                     CurrentTop = new Vec2(b.X, b.Y), Width = b.Width, Height = b.Height,
+                    Reserve = GroupFootprint.Margins(b, Footprint(g, boxes)),
                     PivotOffset = new Vec2(pivot.X - b.X, pivot.Y - b.Y) } };
                 if (LabelGroup(g))
                 {
-                    // A label with notes reserves its whole box but keeps its node's role.
+                    // A label with notes or a tag reserves its whole box but keeps its node's role.
                     var only = nodes[members[g.Id].Single(nodes.ContainsKey)];
+                    u.Node.NodeGaps = !members[g.Id].Any(nonNodes.ContainsKey) && g.TagSize.X > 0 && g.TagSize.Y > 0;
                     u.Node.ParamRole = only.Kind == NodeKind.Param;
                     u.Node.AlignRight = tops[only.Id].X + only.Width - b.X;
                 }

@@ -137,6 +137,21 @@ internal static class FormatAllWireTests
             var r = Verify(s, "satellite consumer collision");
             Assert(BackwardWires.Count(s.Wires, Dx(s, r)).Created == 0 && r.Tops[loose.Id].X > loose.Bounds.X, "consumer did not follow");
         });
+        Check("Format all untagged satellite cluster retains main's row alignment golden", () => {
+            var loose = new NonNodeMember { Id = Id(501), Bounds = new Box(220, 0, 80, 40) };
+            var s = new FormatAllSnapshot { Targets = new[] {
+                Group(1, Node(101, 0, 100), Node(102, 100, 100)), Group(2, Node(201, 400, 0), Node(202, 500, 0)) },
+                LooseObjects = new[] { loose }, Obstacles = new[] { loose.Bounds } };
+            s.Wires = new[] { Wire(s, Id(102), loose.Id) };
+            var r = Verify(s, "untagged satellite cluster");
+            // Recorded by running main b884c16322a43f58e5a7757d0141216c354e5ead.
+            // The satellite puts both clusters in row 0 despite group 1's raw Y=100.
+            var expected = new[] { (101, 0.0, 100.0), (102, 110.0, 100.0), (201, 360.0, 0.0), (202, 470.0, 0.0), (501, 230.0, 0.0) };
+            Assert(r.Tops.Count == expected.Length && expected.All(p => r.Tops[Id(p.Item1)].X == p.Item2 && r.Tops[Id(p.Item1)].Y == p.Item3)
+                && r.GroupBoxes[Id(1)].Equals(new Box(0, 100, 190, 40)) && r.GroupBoxes[Id(2)].Equals(new Box(360, 0, 190, 40))
+                && r.Moves.Select(m => m.Id).SequenceEqual(new[] { Id(102), Id(201), Id(202), Id(501) }),
+                "untagged satellite differs from main");
+        });
         Check("Format all multi-group loose object stays fixed; cross-row wires stay forward", () => {
             var groups = new[] { Group(1, Node(101, 0, 100), Node(102, 100, 100)), Group(2, Node(201, 185, 400), Node(202, 285, 400)) };
             var loose = new NonNodeMember { Id = Id(501), Bounds = new Box(420, 0, 80, 40) };
