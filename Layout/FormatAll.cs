@@ -26,6 +26,8 @@ namespace HopperFormat.Layout
         // LooseObjects also appear in Obstacles until promoted to satellites.
         public IReadOnlyList<NonNodeMember> LooseObjects { get; set; } = Array.Empty<NonNodeMember>();
         public IReadOnlyList<WireX> Wires { get; set; } = Array.Empty<WireX>();
+        // Includes fixed/rigid groups which have no usable hierarchy snapshot.
+        public IReadOnlyDictionary<Guid, Vec2> GroupTags { get; set; } = new Dictionary<Guid, Vec2>();
         public Options Options { get; set; } = new Options();
     }
 
@@ -119,7 +121,7 @@ namespace HopperFormat.Layout
                         Measurable(target.Bounds) ? " (moves rigidly)" : " (no measurable outline)"));
                     if (fixedTarget)
                     {
-                        if (Measurable(target.Bounds)) obstacles.Add(target.Bounds);
+                        if (Measurable(target.Bounds)) obstacles.Add(Footprint(target, originalBoxes[target.Id]));
                         continue;
                     }
                     if (!Measurable(target.Bounds)) continue;
@@ -141,7 +143,8 @@ namespace HopperFormat.Layout
                     Diagnostic = "No groups to format", Log = log.ToArray(), Notices = log.ToArray() } };
             }
 
-            var boxes = solved.ToDictionary(s => s.Target.Id, s => s.Result.GroupBoxes[s.Target.Id]);
+            var boxes = solved.ToDictionary(s => s.Target.Id, s => s.Result.GroupFootprints.TryGetValue(s.Target.Id, out var footprint)
+                ? footprint : Footprint(s.Target, s.Result.GroupBoxes));
             // Preserve the existing geometric fixed point, including an ordinary
             // tidy result retained when rigid wire constraints were infeasible.
             // With no inner or outer moves there can be no newly backward wire.
@@ -236,6 +239,16 @@ namespace HopperFormat.Layout
                 Success = true, Tops = tops, GroupBoxes = groupBoxes, Moves = moves.Values.ToArray(),
                 Rounds = tidy.Rounds, Unstable = tidy.Unstable || solved.Any(s => s.Result.Unstable), Log = log.ToArray(),
                 Notices = notices.ToArray(), DissolvedCount = dissolved } };
+
+            Box Footprint(FormatAllTarget target, IReadOnlyDictionary<Guid, Box> rawBoxes)
+            {
+                var b = rawBoxes.TryGetValue(target.Id, out var root) ? root : target.Bounds;
+                foreach (var pair in rawBoxes)
+                    if (Measurable(pair.Value)) b = GroupFootprint.Union(b,
+                        GroupFootprint.IncludeTag(pair.Value, snapshot.GroupTags.TryGetValue(pair.Key, out var tag) ? tag :
+                            targetGroups[target.Id].FirstOrDefault(g => g.Id == pair.Key)?.TagSize ?? default));
+                return b;
+            }
         }
 
         private static string Skipped(FormatAllTarget target, string reason)

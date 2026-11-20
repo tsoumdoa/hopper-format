@@ -83,9 +83,13 @@ namespace HopperFormat
             {
                 var bounds = ObstacleGroup(group);
                 targets.Add(new FormatAllTarget { Id = group.InstanceGuid, Label = SelectionSnapshot.DescribeGroup(document, group, membership), Bounds = bounds,
+                    RigidGroupBoxes = membership.Descendants(group).Concat(new[] { group.InstanceGuid }).Distinct()
+                        .Where(membership.Groups.ContainsKey).Select(id => membership.Groups[id]).Where(g => g.Attributes != null)
+                        .ToDictionary(g => g.InstanceGuid, g => Bounds(g)),
                     Fixed = true, SkipReason = membership.FormatAllDiagnostic(group) ?? "No top-level ownership root" });
             }
             capture.Snapshot = new FormatAllSnapshot { Targets = targets, Obstacles = obstacles, Options = options,
+                GroupTags = document.Objects.OfType<GH_Group>().ToDictionary(g => g.InstanceGuid, GroupTag.Measure),
                 Wires = BackwardWireCapture.Capture(document),
                 LooseObjects = capture.looseObjects.Values.Select(obj => new NonNodeMember { Id = obj.InstanceGuid, Label = SelectionSnapshot.Label(obj),
                     Bounds = Bounds(obj), PivotOffset = new Vec2(obj.Attributes.Pivot.X - obj.Attributes.Bounds.X, obj.Attributes.Pivot.Y - obj.Attributes.Bounds.Y) }).ToArray() };

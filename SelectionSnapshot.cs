@@ -208,6 +208,7 @@ namespace HopperFormat
                         NonNodes = direct.Where(nonNodes.ContainsKey).Select(id => nonNodes[id]).ToArray(),
                         Locked = (group.NickName ?? string.Empty).IndexOf("[lock]", StringComparison.OrdinalIgnoreCase) >= 0 };
                     LayoutObject(document, group, membership);
+                    g.TagSize = GroupTag.Measure(group);
                     g.Label = DescribeGroup(document, group, membership);
                     if (!MemberIds(g).Any()) { built.Add(g.Id, g); return g; }
                     // Measure padding against the same raw members the host used.

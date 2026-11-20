@@ -102,6 +102,8 @@ namespace HopperFormat.Layout
         public Vec2 Anchor { get; set; }
         public IReadOnlyDictionary<Guid, Vec2> Tops { get; set; } = new Dictionary<Guid, Vec2>();
         public IReadOnlyDictionary<Guid, Box> GroupBoxes { get; set; } = new Dictionary<Guid, Box>();
+        // Hierarchy layout envelopes, separate from the predicted raw GH boxes.
+        internal IReadOnlyDictionary<Guid, Box> GroupFootprints { get; set; } = new Dictionary<Guid, Box>();
         public int Rounds { get; set; }
         public IReadOnlyList<Move> Moves { get; set; } = Array.Empty<Move>();
         public IReadOnlyList<string> Log { get; set; } = Array.Empty<string>();

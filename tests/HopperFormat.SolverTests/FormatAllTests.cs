@@ -40,6 +40,35 @@ internal static class FormatAllTests
     {
         int failures = 0;
         void Check(string name, Action test) { try { test(); Console.WriteLine("PASS " + name); } catch (Exception e) { failures++; Console.WriteLine("FAIL " + name + ": " + e.Message); } }
+        Check("Format all tidy measures lower tag clearance and preserves raw boxes", () => {
+            FormatAllTarget Target(int id, int first, double y, Vec2 tag) {
+                var g = new HierarchyGroup { Id = Id(id), TagSize = tag,
+                    Nodes = new[] { TestNode(first, 0, y), TestNode(first + 1, 0, y + 56) } };
+                return new FormatAllTarget { Id = g.Id, Bounds = new Box(0, y, 80, 96),
+                    Hierarchy = new HierarchySnapshot { Groups = new[] { g } } };
+            }
+            var upper = Target(100, 1, 0, default); var lower = Target(101, 3, 140, new Vec2(251, 31));
+            var s = new FormatAllSnapshot { Targets = new[] { upper, lower } };
+            var r = FormatAllSolver.Solve(s).Layout;
+            Assert(r.Success && !r.Unstable, r.Diagnostic);
+            Assert(r.GroupBoxes[lower.Id].Y - 31 - r.GroupBoxes[upper.Id].Bottom == s.Options.GroupGapY, "tidy ignored tag top");
+            Assert(r.GroupBoxes[lower.Id].Width == 80 && r.GroupBoxes[lower.Id].Height == 96, "output is not raw box");
+            WholeMoves(s, r, "odd tag tidy"); StableAll(s, r, "odd tag tidy");
+        });
+        Check("Format all fixed nested group tags obstruct tidy and rigid groups reserve tags", () => {
+            var fixedRoot = new FormatAllTarget { Id = Id(100), Fixed = true, Bounds = new Box(0, 150, 80, 80),
+                RigidGroupBoxes = new Dictionary<Guid, Box> { [Id(100)] = new Box(0, 150, 80, 80), [Id(102)] = new Box(0, 150, 80, 40) } };
+            var moving = new FormatAllTarget { Id = Id(101), Bounds = new Box(170, 80, 80, 40), SkipReason = "rigid fixture",
+                RigidMembers = new[] { new NonNodeMember { Id = Id(1), Bounds = new Box(170, 80, 80, 40) } } };
+            var s = new FormatAllSnapshot { Targets = new[] { fixedRoot, moving },
+                GroupTags = new Dictionary<Guid, Vec2> { [Id(102)] = new Vec2(401, 60), [moving.Id] = new Vec2(101, 31) } };
+            var r = FormatAllSolver.Solve(s).Layout;
+            Assert(r.Success && !r.Unstable, r.Diagnostic);
+            Assert(r.GroupBoxes[moving.Id].Y - 31 - fixedRoot.Bounds.Bottom >= s.Options.GroupGapY, "fixed child tag did not obstruct");
+            Assert(!r.GroupBoxes.ContainsKey(fixedRoot.Id) && r.Tops.Count == 1, "fixed target moved");
+            Assert(r.GroupBoxes[moving.Id].Width == 80 && r.GroupBoxes[moving.Id].Height == 40, "rigid output is not raw box");
+            foreach (var move in r.Moves) Assert(Whole(move.Pivot.X - 170) && Whole(move.Pivot.Y - 80), "fractional rigid move");
+        });
         Check("Format all inner solves retain distinct island left edges while stripping outside X", () => {
             var a = TestNode(1, 50, 0); var b = TestNode(2, 200, 80);
             var c = TestNode(3, 550, 200); var d = TestNode(4, 700, 280);
@@ -456,13 +485,13 @@ internal static class FormatAllTests
     }
     private static Node TestNode(int id, double x, double y) => new Node { Id = Id(id), CurrentTop = new Vec2(x,y), Width = 80,Height = 40,
         Inputs = new[] { new Vec2(0,10) }, Outputs = new[] { new Vec2(80,10) } };
-    private static FormatAllSnapshot Reapply(FormatAllSnapshot s, Result r) => new FormatAllSnapshot { Options = s.Options, Obstacles = s.Obstacles,
+    private static FormatAllSnapshot Reapply(FormatAllSnapshot s, Result r) => new FormatAllSnapshot { Options = s.Options, Obstacles = s.Obstacles, GroupTags = s.GroupTags,
         Targets = s.Targets.Select(t => new FormatAllTarget { Id = t.Id, Label = t.Label, Bounds = r.GroupBoxes[t.Id], Fixed = t.Fixed,
             SkipReason = t.SkipReason, Hierarchy = Applied(t.Hierarchy,r) }).ToArray() };
 
     private static HierarchySnapshot Applied(HierarchySnapshot s, Result r)
     {
-        HierarchyGroup Group(HierarchyGroup g) => new HierarchyGroup { Id = g.Id, Label = g.Label, Padding = g.Padding, Locked = g.Locked,
+        HierarchyGroup Group(HierarchyGroup g) => new HierarchyGroup { Id = g.Id, Label = g.Label, Padding = g.Padding, Locked = g.Locked, TagSize = g.TagSize,
             Nodes = g.Nodes.Select(n => new Node { Id = n.Id, Label = n.Label, CurrentTop = r.Tops[n.Id], PivotOffset = n.PivotOffset,
                 Kind = n.Kind, Widget = n.Widget, Width = n.Width, Height = n.Height, Inputs = n.Inputs, Outputs = n.Outputs }).ToArray(),
             NonNodes = g.NonNodes.Select(n => new NonNodeMember { Id = n.Id, Label = n.Label, PivotOffset = n.PivotOffset,

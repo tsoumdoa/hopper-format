@@ -29,7 +29,7 @@ internal static class HierarchyTests
     private static HierarchySnapshot Applied(HierarchySnapshot s, Result r, Random shuffle = null)
     {
         T[] Order<T>(IEnumerable<T> items) => shuffle == null ? items.ToArray() : items.OrderBy(_ => shuffle.Next()).ToArray();
-        HierarchyGroup Copy(HierarchyGroup g) => new HierarchyGroup { Id = g.Id, Label = g.Label, Padding = g.Padding, Locked = g.Locked,
+        HierarchyGroup Copy(HierarchyGroup g) => new HierarchyGroup { Id = g.Id, Label = g.Label, Padding = g.Padding, Locked = g.Locked, TagSize = g.TagSize,
             Nodes = Order(g.Nodes.Select(n => AppliedNode(n, r))), Children = Order(g.Children.Select(Copy)),
             NonNodes = Order(g.NonNodes.Select(n => new NonNodeMember { Id = n.Id, Label = n.Label, PivotOffset = n.PivotOffset,
                 Bounds = new Box(r.Tops[n.Id].X, r.Tops[n.Id].Y, n.Bounds.Width, n.Bounds.Height) })) };
@@ -48,6 +48,61 @@ internal static class HierarchyTests
 
     internal static int Run()
     {
+        Check("Hierarchy lower group tag receives GroupGapY above its footprint", () => {
+            var upper = G(100, new[] { N(1), N(2, 0, 80) });
+            var lower = G(101, new[] { N(3, 0, 300), N(4, 0, 380) });
+            var s = new HierarchySnapshot { Groups = new[] { upper, lower } };
+            var plain = Solve(s);
+            Near(plain.GroupBoxes[lower.Id].Y - plain.GroupBoxes[upper.Id].Bottom, s.Options.GroupGapY, "untagged gap");
+            lower.TagSize = new Vec2(41, 37);
+            var r = Solve(s);
+            Near(r.GroupBoxes[lower.Id].Y - r.GroupBoxes[upper.Id].Bottom, s.Options.GroupGapY + 37, "tagged gap");
+            Near(r.GroupBoxes[lower.Id].Height, plain.GroupBoxes[lower.Id].Height, "raw height");
+            Stable(s, r);
+        });
+        Check("Hierarchy wide odd tag clears neighbouring column with whole moves", () => {
+            var a = N(1); var b = N(2, 0, 80); var c = N(3, 400); var d = N(4, 400, 80);
+            var left = G(100, new[] { a, b }); left.TagSize = new Vec2(253, 29);
+            var right = G(101, new[] { c, d });
+            var s = new HierarchySnapshot { Groups = new[] { left, right }, Edges = new[] { E(b, c) } };
+            var r = Solve(s);
+            var footprint = GroupFootprint.IncludeTag(r.GroupBoxes[left.Id], left.TagSize);
+            Assert(r.GroupBoxes[right.Id].X - footprint.Right >= s.Options.GroupGapX - 1e-7, "tag lacks horizontal clearance");
+            foreach (var n in new[] { a, b, c, d }) {
+                Near(r.Tops[n.Id].X - n.CurrentTop.X, Math.Round(r.Tops[n.Id].X - n.CurrentTop.X), "whole X delta");
+                Near(r.Tops[n.Id].Y - n.CurrentTop.Y, Math.Round(r.Tops[n.Id].Y - n.CurrentTop.Y), "whole Y delta");
+            }
+            Stable(s, r);
+        });
+        Check("Hierarchy tagged group-to-loose link retains measured grip alignment", () => {
+            var a = N(1, 30, 60); var b = N(2, 180, 100); var c = N(3, 450, 30);
+            var group = G(100, new[] { a, b }); group.TagSize = new Vec2(401, 35);
+            var s = new HierarchySnapshot { Groups = new[] { group }, LooseNodes = new[] { c }, Edges = new[] { E(a, b), E(b, c) } };
+            var r = Solve(s);
+            Near(r.Tops[b.Id].Y + b.Outputs[0].Y, r.Tops[c.Id].Y + c.Inputs[0].Y, "tagged measured grips");
+            Assert(r.Tops[c.Id].X - GroupFootprint.IncludeTag(r.GroupBoxes[group.Id], group.TagSize).Right >= s.Options.GroupGapX,
+                "tag-to-node clearance");
+            Stable(s, r);
+        });
+        Check("Hierarchy protruding child tag expands parent footprint without expanding raw box", () => {
+            var child = G(101, new[] { N(1), N(2, 0, 80) }); child.TagSize = new Vec2(301, 60);
+            var parent = G(100, Array.Empty<Node>(), child);
+            var other = G(102, new[] { N(3, 0, 400), N(4, 0, 480) });
+            var s = new HierarchySnapshot { Groups = new[] { other, parent } };
+            var r = Solve(s); var raw = r.GroupBoxes[parent.Id]; var childRaw = r.GroupBoxes[child.Id];
+            Near(raw.Y, childRaw.Y - parent.Padding.Top, "raw parent top");
+            Near(r.GroupFootprints[parent.Id].Y, childRaw.Y - 60, "outer tag top");
+            Near(r.GroupFootprints[parent.Id].X, childRaw.X + (childRaw.Width - 301) / 2, "outer tag left");
+            Assert(r.GroupBoxes[other.Id].Y - raw.Bottom >= s.Options.GroupGapY, "parent spacing lost");
+            Stable(s, r);
+        });
+        Check("Hierarchy see-through named labels keep identical node layout", () => {
+            var label = G(100, new[] { N(1) });
+            var s = new HierarchySnapshot { Groups = new[] { label }, LooseNodes = new[] { N(2, 0, 200) } };
+            var plain = Solve(s); label.TagSize = new Vec2(501, 80); var tagged = Solve(s);
+            Assert(Fingerprint(plain) == Fingerprint(tagged), "see-through tag changed node layout");
+            Stable(s, tagged);
+        });
         Check("Hierarchy moving child levels retain distinct island left edges", () => {
             var a = N(1, 0, 0); var b = N(2, 150, 80);
             var c = N(3, 400, 0); var d = N(4, 600, 80);

@@ -28,6 +28,8 @@ namespace HopperFormat.Layout
         public IReadOnlyList<HierarchyGroup> Children { get; set; } = Array.Empty<HierarchyGroup>();
         public IReadOnlyList<NonNodeMember> NonNodes { get; set; } = Array.Empty<NonNodeMember>();
         public Padding Padding { get; set; }
+        // Balloon width and total height above the raw box, including its pointer.
+        public Vec2 TagSize { get; set; }
         public bool Locked { get; set; }
     }
 
@@ -158,6 +160,8 @@ namespace HopperFormat.Layout
                 var p = group.Padding;
                 if (new[] { p.Left, p.Top, p.Right, p.Bottom }.Any(v => !Graph.Finite(v) || v < 0))
                     throw new InvalidOperationException(group.Label + ": invalid padding.");
+                if (new[] { group.TagSize.X, group.TagSize.Y }.Any(v => !Graph.Finite(v) || v < 0))
+                    throw new InvalidOperationException(group.Label + ": invalid tag size.");
                 groups.Add(group.Id, group);
                 depths.Add(group.Id, path.Length);
                 var next = path.Concat(new[] { group.Id }).ToArray();
@@ -222,6 +226,13 @@ namespace HopperFormat.Layout
                 return originalBoxes[g.Id] = Pad(content, g.Padding);
             }
             private IEnumerable<HierarchyGroup> MeasurableChildren(HierarchyGroup g) => g.Children.Where(c => members[c.Id].Count > 0);
+            private Box Footprint(HierarchyGroup g, IReadOnlyDictionary<Guid, Box> rawBoxes)
+            {
+                // See-through labels retain their node's layout role and reserve no tag.
+                var b = GroupFootprint.IncludeTag(rawBoxes[g.Id], SeeThrough(g) ? default : g.TagSize);
+                foreach (var child in MeasurableChildren(g)) b = GroupFootprint.Union(b, Footprint(child, rawBoxes));
+                return b;
+            }
             private IEnumerable<HierarchyGroup> LayoutChildren(HierarchyGroup g) => MeasurableChildren(g)
                 .SelectMany(c => dissolved.Contains(c.Id) ? LayoutChildren(c) : new[] { c });
             private IEnumerable<HierarchyGroup> RealChildren(HierarchyGroup g) => LayoutChildren(g).Where(c => !SeeThrough(c));
@@ -292,7 +303,7 @@ namespace HopperFormat.Layout
                 var roots = snapshot.Groups.Where(g => members[g.Id].Count > 0).ToArray();
                 var covered = new HashSet<Guid>(snapshot.Groups.SelectMany(g => members[g.Id]));
                 var loose = snapshot.LooseNodes.Where(n => !covered.Contains(n.Id)).OrderBy(n => n.Id).ToArray();
-                var originalUnits = roots.Select(g => SeeThrough(g) ? ObjectBox(members[g.Id].Single(nodes.ContainsKey)) : originalBoxes[g.Id])
+                var originalUnits = roots.Select(g => SeeThrough(g) ? ObjectBox(members[g.Id].Single(nodes.ContainsKey)) : Footprint(g, originalBoxes))
                     .Concat(loose.Select(n => ObjectBox(n.Id))).ToArray();
                 foreach (var g in roots.OrderBy(g => g.Id)) SolveGroup(g);
                 var units = UniqueUnits(roots.Select(GroupUnit).Concat(loose.Select(NodeUnit)));
@@ -315,7 +326,9 @@ namespace HopperFormat.Layout
                     return new Move { Id = p.Key, Pivot = n == null ? pivot : new Vec2(LayoutSolver.Round(pivot.X), LayoutSolver.Round(pivot.Y)) };
                 }).ToArray();
                 return new Result { Success = true, Tops = new SortedDictionary<Guid, Vec2>(tops), Moves = moves,
-                    GroupBoxes = new SortedDictionary<Guid, Box>(boxes), Log = log.ToArray(), Notices = notices.ToArray(),
+                    GroupBoxes = new SortedDictionary<Guid, Box>(boxes),
+                    GroupFootprints = groups.Values.Where(g => boxes.ContainsKey(g.Id)).ToDictionary(g => g.Id, g => Footprint(g, boxes)),
+                    Log = log.ToArray(), Notices = notices.ToArray(),
                     DissolvedCount = dissolved.Count, Unstable = unstable, Rounds = rounds,
                     Anchor = originalUnits.Length == 0 ? new Vec2(0, 0) : new Vec2(originalUnits.Min(b => b.X), originalUnits.Min(b => b.Y)) };
             }
@@ -325,7 +338,7 @@ namespace HopperFormat.Layout
                 var children = RealChildren(g).ToArray();
                 // Measure before the children grow, excluding notes and see-through label boxes.
                 var oldUnits = direct.Where(nodes.ContainsKey).Select(ObjectBox)
-                    .Concat(children.Select(c => originalBoxes[c.Id])).ToArray();
+                    .Concat(children.Select(c => Footprint(c, originalBoxes))).ToArray();
                 foreach (var child in RealChildren(g).OrderBy(c => c.Id)) SolveGroup(child);
                 if (oldUnits.Length > 0)
                 {
@@ -339,7 +352,7 @@ namespace HopperFormat.Layout
                         snapshot.Groups.Count == 1 && snapshot.Groups[0].Id == g.Id &&
                         !snapshot.LooseNodes.Any(n => !members[g.Id].Contains(n.Id)));
                     var after = Envelope(direct.Where(nodes.ContainsKey).Select(ObjectBox)
-                        .Concat(children.Select(c => boxes[c.Id])));
+                        .Concat(children.Select(c => Footprint(c, boxes))));
                     double growthX = Math.Max(0, Math.Ceiling(after.Right - before.Right - 1e-7)),
                         growthY = Math.Max(0, Math.Ceiling(after.Bottom - before.Bottom - 1e-7));
                     foreach (var id in LayoutPhysicalIds(g).Where(nonNodes.ContainsKey).OrderBy(id => id))
@@ -384,7 +397,7 @@ namespace HopperFormat.Layout
                     labelUnit.Members = members[g.Id];
                     return labelUnit;
                 }
-                var b = boxes[g.Id];
+                var b = Footprint(g, boxes);
                 // Refer to a descendant pivot, making every outer translation integral.
                 var id = members[g.Id].Where(nodes.ContainsKey).OrderBy(k => k).FirstOrDefault();
                 var pivot = id != Guid.Empty ? new Vec2(tops[id].X + nodes[id].PivotOffset.X, tops[id].Y + nodes[id].PivotOffset.Y) :

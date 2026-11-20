@@ -13,6 +13,8 @@ namespace HopperFormat.Layout
             internal Box Bounds;
         }
 
+        // Layout footprints (including group tags), never the raw output group boxes.
+        // Wire bounds use changes in these origins, so rigid translations stay valid.
         internal Dictionary<Guid, Box> Boxes;
         internal List<Box> Obstacles;
         internal readonly List<Satellite> Satellites = new List<Satellite>();
