@@ -48,6 +48,21 @@ internal static class HierarchyTests
 
     internal static int Run()
     {
+        Check("Hierarchy aligned raw column stays fixed with a wider tag in either Guid order", () => {
+            foreach (bool namedFirst in new[] { false, true }) {
+                var upper = new HierarchyGroup { Id = Id(100), Nodes = new[] { N(1), N(2, 0, 56) },
+                    TagSize = namedFirst ? new Vec2(251, 31) : default };
+                double y = namedFirst ? 136 : 167;
+                var lower = new HierarchyGroup { Id = Id(101), Nodes = new[] { N(3, 0, y), N(4, 0, y + 56) },
+                    TagSize = namedFirst ? default : new Vec2(251, 31) };
+                var s = new HierarchySnapshot { Groups = new[] { upper, lower } };
+                var r = Solve(s);
+                Assert(r.Moves.Count == 0, "wide tag moved aligned raw boxes");
+                Near(r.GroupBoxes[upper.Id].X, 0, "upper raw left");
+                Near(r.GroupBoxes[lower.Id].X, 0, "lower raw left");
+                Stable(s, r);
+            }
+        });
         Check("Hierarchy lower group tag receives GroupGapY above its footprint", () => {
             var upper = G(100, new[] { N(1), N(2, 0, 80) });
             var lower = G(101, new[] { N(3, 0, 300), N(4, 0, 380) });
@@ -59,6 +74,38 @@ internal static class HierarchyTests
             Near(r.GroupBoxes[lower.Id].Y - r.GroupBoxes[upper.Id].Bottom, s.Options.GroupGapY + 37, "tagged gap");
             Near(r.GroupBoxes[lower.Id].Height, plain.GroupBoxes[lower.Id].Height, "raw height");
             Stable(s, r);
+        });
+        Check("Hierarchy connected columns align raw left or right edges and clear incoming wide tags", () => {
+            foreach (bool mixed in new[] { false, true }) {
+                var a = N(1); var b = N(2, 0, 56);
+                var c = N(3, 400); var d = N(4, 400, 56); var e = N(5, 400, 400, 140); var f = N(6, 400, 456, 140);
+                var source = G(100, new[] { a, b });
+                var tagged = G(101, new[] { c, d }); tagged.TagSize = new Vec2(301, 31);
+                var peer = G(102, new[] { e, f });
+                var s = new HierarchySnapshot { Groups = mixed ? new[] { source, tagged } : new[] { source, tagged, peer },
+                    LooseNodes = mixed ? new[] { e } : Array.Empty<Node>(), Edges = new[] { E(b, c), E(b, e) } };
+                var r = Solve(s);
+                if (mixed) Near(r.GroupBoxes[tagged.Id].Right, r.Tops[e.Id].X + e.Width, "raw right alignment");
+                else Near(r.GroupBoxes[tagged.Id].X, r.GroupBoxes[peer.Id].X, "raw left alignment");
+                Assert(r.GroupFootprints[tagged.Id].X - r.GroupFootprints[source.Id].Right >= s.Options.GroupGapX - 1,
+                    "next column's left tag margin lost");
+                WholeUnitMoves(s, r); Stable(s, r);
+            }
+        });
+        Check("Tagged random hierarchies retain fixed points and whole moves across 300 seeds", () => {
+            for (int seed = 0; seed < 300; seed++) {
+                try {
+                    var s = RandomTree(seed);
+                    foreach (var g in s.Groups.SelectMany(Groups))
+                        if ((g.Id.GetHashCode() + seed) % 3 != 0) g.TagSize = new Vec2(101 + (seed % 7) * 73, 21 + seed % 31);
+                    var tops = s.Groups.SelectMany(Nodes).Concat(s.LooseNodes).GroupBy(n => n.Id).Select(g => g.First()).ToDictionary(n => n.Id,
+                        n => new Vec2(LayoutSolver.Round(n.CurrentTop.X + n.PivotOffset.X) - n.PivotOffset.X,
+                            LayoutSolver.Round(n.CurrentTop.Y + n.PivotOffset.Y) - n.PivotOffset.Y));
+                    foreach (var note in s.Groups.SelectMany(Groups).SelectMany(g => g.NonNodes)) tops[note.Id] = new Vec2(note.Bounds.X, note.Bounds.Y);
+                    s = Applied(s, new Result { Tops = tops });
+                    var r = Solve(s); WholeUnitMoves(s, r); Stable(s, r); Geometry(s, r);
+                } catch (Exception e) { throw new Exception("tagged seed " + seed + ": " + e.Message); }
+            }
         });
         Check("Hierarchy wide odd tag clears neighbouring column with whole moves", () => {
             var a = N(1); var b = N(2, 0, 80); var c = N(3, 400); var d = N(4, 400, 80);

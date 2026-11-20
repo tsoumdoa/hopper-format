@@ -3,6 +3,13 @@ using System.Collections.Generic;
 
 namespace HopperFormat.Layout
 {
+    public readonly struct Padding
+    {
+        public readonly double Left, Top, Right, Bottom;
+        public Padding(double left, double top, double right, double bottom)
+        { Left = left; Top = top; Right = right; Bottom = bottom; }
+    }
+
     public readonly struct Box
     {
         public readonly double X, Y, Width, Height;
@@ -29,6 +36,8 @@ namespace HopperFormat.Layout
         public Vec2 PivotOffset { get; set; }
         public double Width { get; set; }
         public double Height { get; set; }
+        // Clearance beyond the alignment box; never changes its alignment edges.
+        public Padding Reserve { get; set; }
         public bool Widget { get; set; }
         // A group unit standing in for one labelled param: it ranks like that param
         // (output params go to the last column) while reserving its whole box.

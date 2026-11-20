@@ -4,6 +4,14 @@ namespace HopperFormat.Layout
 {
     public static class GroupFootprint
     {
+        internal static Padding Margins(Box box, Box footprint) => new Padding(
+            Math.Max(0, box.X - footprint.X), Math.Max(0, box.Y - footprint.Y),
+            Math.Max(0, footprint.Right - box.Right), Math.Max(0, footprint.Bottom - box.Bottom));
+
+        internal static Box Expand(Box box, Padding reserve) => new Box(
+            box.X - reserve.Left, box.Y - reserve.Top,
+            box.Width + reserve.Left + reserve.Right, box.Height + reserve.Top + reserve.Bottom);
+
         // TagSize includes the balloon's pointer strip. The raw box stays intact.
         public static Box IncludeTag(Box box, Vec2 tagSize)
         {

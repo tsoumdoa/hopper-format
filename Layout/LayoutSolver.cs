@@ -61,6 +61,7 @@ namespace HopperFormat.Layout
                 else
                 {
                     double nextY = roundAnchor.Y;
+                    bool firstIsland = true;
                     foreach (var island in islands)
                     {
                         var ordering = new Ordering(graph, island, ranks);
@@ -76,11 +77,14 @@ namespace HopperFormat.Layout
                             return new Result { Success = false, Diagnostic = "Layout compaction failed: constraint cycle." };
                         before += ordering.Before;
                         after += ordering.After;
-                        double minY = island.Min(n => placed[n.Id].Y);
+                        // Keep the first island's raw anchor; later islands clear
+                        // the previous envelope from their own tag tops.
+                        double minY = island.Min(n => placed[n.Id].Y - (firstIsland ? 0 : n.Reserve.Top));
                         double minX = island.Min(n => placed[n.Id].X);
                         foreach (var node in island)
                             tops[node.Id] = new Vec2(placed[node.Id].X + (islandWindows ? 0 : islandX - minX), placed[node.Id].Y + nextY - minY);
-                        nextY = island.Max(n => tops[n.Id].Y + n.Height) + Placement.IslandGap(graph, island, islands.SkipWhile(i => i != island).Skip(1).FirstOrDefault() ?? new List<Node>());
+                        nextY = island.Max(n => tops[n.Id].Y + n.Height + n.Reserve.Bottom) + Placement.IslandGap(graph, island, islands.SkipWhile(i => i != island).Skip(1).FirstOrDefault() ?? new List<Node>());
+                        firstIsland = false;
                     }
                 }
                 if (tops.Count > 0)
@@ -159,7 +163,7 @@ namespace HopperFormat.Layout
             return new Snapshot { Edges = snapshot.Edges, Inbound = snapshot.Inbound, Outbound = snapshot.Outbound,
                 Options = snapshot.Options, Nodes = snapshot.Nodes.Select(n => new Node { Id = n.Id, Label = n.Label,
                     Width = n.Width, Height = n.Height, PivotOffset = n.PivotOffset, CurrentTop = tops[n.Id],
-                    Kind = n.Kind, Widget = n.Widget, ParamRole = n.ParamRole, AlignRight = n.AlignRight,
+                    Kind = n.Kind, Widget = n.Widget, ParamRole = n.ParamRole, AlignRight = n.AlignRight, Reserve = n.Reserve,
                     Inputs = n.Inputs, Outputs = n.Outputs }).ToArray() };
         }
     }

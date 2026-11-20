@@ -145,6 +145,7 @@ namespace HopperFormat.Layout
 
             var boxes = solved.ToDictionary(s => s.Target.Id, s => s.Result.GroupFootprints.TryGetValue(s.Target.Id, out var footprint)
                 ? footprint : Footprint(s.Target, s.Result.GroupBoxes));
+            var alignmentBoxes = solved.ToDictionary(s => s.Target.Id, s => s.Result.GroupBoxes[s.Target.Id]);
             // Preserve the existing geometric fixed point, including an ordinary
             // tidy result retained when rigid wire constraints were infeasible.
             // With no inner or outer moves there can be no newly backward wire.
@@ -153,13 +154,13 @@ namespace HopperFormat.Layout
                 var b = physicalMembers[s.Target.Id][p.Key].Bounds;
                 return SamePivot(p.Value.X, b.X) && SamePivot(p.Value.Y, b.Y);
             }));
-            if (snapshot.Wires.Count > 0 && innerStill) ordinary = GroupTidy.Solve(boxes, obstacles, snapshot.Options);
+            if (snapshot.Wires.Count > 0 && innerStill) ordinary = GroupTidy.Solve(boxes, obstacles, snapshot.Options, null, alignmentBoxes);
             bool fixedPoint = ordinary != null && ordinary.Success && boxes.All(p =>
                 SamePivot(p.Value.X, ordinary.GroupBoxes[p.Key].X) && SamePivot(p.Value.Y, ordinary.GroupBoxes[p.Key].Y));
             WireTidyPlan Plan(bool enabled) => WireTidyPlan.Create(enabled ? snapshot : new FormatAllSnapshot(),
-                solved.Select(s => (s.Target.Id, s.Result)).ToArray(), physicalMembers, boxes, obstacles, aliases, nodeIds);
+                solved.Select(s => (s.Target.Id, s.Result)).ToArray(), physicalMembers, boxes, obstacles, aliases, nodeIds, alignmentBoxes);
             var wirePlan = Plan(!fixedPoint);
-            var tidy = GroupTidy.Solve(wirePlan.Boxes, wirePlan.Obstacles, snapshot.Options, wirePlan);
+            var tidy = GroupTidy.Solve(wirePlan.Boxes, wirePlan.Obstacles, snapshot.Options, wirePlan, wirePlan.AlignmentBoxes);
             if (!tidy.Success && wirePlan.HasBounds)
             {
                 // This subset changes only rigid group placement, not inner gaps.
@@ -167,7 +168,7 @@ namespace HopperFormat.Layout
                 // The ordinary geometric fixed point above makes that fallback
                 // stable on the next capture without session state or markers.
                 wirePlan = Plan(false);
-                tidy = ordinary ?? GroupTidy.Solve(boxes, obstacles, snapshot.Options);
+                tidy = ordinary ?? GroupTidy.Solve(boxes, obstacles, snapshot.Options, null, alignmentBoxes);
                 Notice("Wire-aware tidy: conflicting rigid bounds; kept ordinary tidy (satellites fixed).");
             }
             if (!tidy.Success) return new FormatAllResult { Skipped = skipped, Layout = tidy };
@@ -320,21 +321,27 @@ namespace HopperFormat.Layout
         public static Result Solve(IReadOnlyDictionary<Guid, Box> targets, IReadOnlyList<Box> obstacles, Options options)
             => Solve(targets, obstacles, options, null);
 
-        internal static Result Solve(IReadOnlyDictionary<Guid, Box> targets, IReadOnlyList<Box> obstacles, Options options, WireTidyPlan wires)
+        internal static Result Solve(IReadOnlyDictionary<Guid, Box> targets, IReadOnlyList<Box> obstacles, Options options, WireTidyPlan wires,
+            IReadOnlyDictionary<Guid, Box> alignmentBoxes = null)
         {
             double gx = options.GroupGapX, gy = options.GroupGapY;
             if (!Graph.Finite(gx) || !Graph.Finite(gy) || gx < 0 || gy < 0)
                 return new Result { Diagnostic = "Group gaps must be finite and non-negative." };
             if (targets.Values.Concat(obstacles).Any(b => !FormatAllSolver.Measurable(b)))
                 return new Result { Diagnostic = "Group and obstacle bounds must be finite and measurable." };
-            var boxes = targets.ToDictionary(p => p.Key, p => p.Value);
+            // Pre-tag boxes (raw groups unioned with satellites) define rows,
+            // columns and snap references. Tags participate only in clearance.
+            var originals = alignmentBoxes ?? targets;
+            var reserve = targets.ToDictionary(p => p.Key, p => GroupFootprint.Margins(originals[p.Key], p.Value));
+            Box Footprint(Guid id, Box box) => GroupFootprint.Expand(box, reserve[id]);
+            var boxes = originals.ToDictionary(p => p.Key, p => p.Value);
             // All coordinates are reconstructed from the starting box and an integer
             // translation, including across passes. Fractional padding stays rigid.
             var translations = targets.ToDictionary(p => p.Key, _ => new Vec2(0, 0));
-            double SnapX(Guid id, double x) => targets[id].X + LayoutSolver.Round(x - targets[id].X);
-            double SnapY(Guid id, double y) => targets[id].Y + LayoutSolver.Round(y - targets[id].Y);
-            double GapX(Guid id, double x) => targets[id].X + Math.Ceiling(x - targets[id].X - Epsilon);
-            double GapY(Guid id, double y) => targets[id].Y + Math.Ceiling(y - targets[id].Y - Epsilon);
+            double SnapX(Guid id, double x) => originals[id].X + LayoutSolver.Round(x - originals[id].X);
+            double SnapY(Guid id, double y) => originals[id].Y + LayoutSolver.Round(y - originals[id].Y);
+            double GapX(Guid id, double x) => originals[id].X + Math.Ceiling(x - originals[id].X - Epsilon);
+            double GapY(Guid id, double y) => originals[id].Y + Math.Ceiling(y - originals[id].Y - Epsilon);
             bool changed = false;
             int rounds = 0;
             for (; rounds < 5;)
@@ -381,7 +388,7 @@ namespace HopperFormat.Layout
                     // snapping/evening must not continually pull against a bound.
                     Dictionary<Guid, double> Horizontal(bool clearance)
                     {
-                        var wireBounds = wires.Bounds(boxes, clearance).ToArray();
+                        var wireBounds = wires.Bounds(boxes.ToDictionary(p => p.Key, p => Footprint(p.Key, p.Value)), clearance).ToArray();
                         var preferred = HorizontalConstraints.Solve(boxes.Keys, wireBounds);
                         if (preferred == null) return null;
                         var bounds = wireBounds.ToList();
@@ -389,7 +396,7 @@ namespace HopperFormat.Layout
                         {
                             var members = row.Members.OrderBy(id => boxes[id].X + preferred[id]).ThenBy(id => id).ToArray();
                             for (int i = 1; i < members.Length; i++) bounds.Add(new HorizontalConstraints.Bound(members[i - 1], members[i],
-                                boxes[members[i - 1]].Right + gx - boxes[members[i]].X));
+                                Footprint(members[i - 1], boxes[members[i - 1]]).Right + gx - Footprint(members[i], boxes[members[i]]).X));
                         }
                         return HorizontalConstraints.Solve(boxes.Keys, bounds);
                     }
@@ -404,11 +411,11 @@ namespace HopperFormat.Layout
                     bool aligned = row.Members.Max(id => boxes[id].Y) - row.Top < 1 - Epsilon;
                     double rowAnchor = boxes[row.Members.OrderBy(id => id).First()].Y;
                     double top = row.Members.Max(id => {
-                        var b = boxes[id]; double x = lefts[id];
-                        var above = placed.Where(p => Overlap(p.X, p.Right, x, x + b.Width) && p.Y < row.Top - Epsilon).ToArray();
+                        var b = Footprint(id, boxes[id]); double x = lefts[id] - reserve[id].Left;
+                        var above = placed.Where(p => Overlap(p.X, p.Right, x, x + b.Width) && p.Y < row.Top - reserve[id].Top - Epsilon).ToArray();
                         if (above.Length == 0) return row.Top;
                         double a = above.Max(p => p.Bottom);
-                        return row.Top - a < 2 * gy - Epsilon ? a + gy : row.Top;
+                        return row.Top - reserve[id].Top - a < 2 * gy - Epsilon ? a + gy + reserve[id].Top : row.Top;
                     });
                     var sameRow = new List<Box>();
                     var rowBoxes = new Dictionary<Guid, Box>();
@@ -421,35 +428,38 @@ namespace HopperFormat.Layout
                         if (!constrained && sameRow.Count > 0)
                         {
                             double right = sameRow.Max(p => p.Right);
-                            if (x - right < 2 * gx - Epsilon) x = GapX(id, right + gx);
+                            if (x - reserve[id].Left - right < 2 * gx - Epsilon) x = GapX(id, right + gx + reserve[id].Left);
                         }
                         var result = new Box(x, y, b.Width, b.Height);
-                        rowBoxes.Add(id, result); sameRow.Add(result);
+                        rowBoxes.Add(id, result); sameRow.Add(Footprint(id, result));
                     }
                     // Fixed objects and already placed rows can only move this
                     // entire row downward, including obstacles below its old top.
                     while (true)
                     {
                         double push = 0;
-                        foreach (var b in rowBoxes.Values)
+                        foreach (var pair in rowBoxes)
+                        {
+                            var b = Footprint(pair.Key, pair.Value);
                             foreach (var p in placed)
                                 if (Overlap(p.Y, p.Bottom, b.Y - gy, b.Bottom + gy) &&
                                     Overlap(p.X, p.Right, b.X - gx, b.Right + gx))
                                     push = Math.Max(push, Math.Ceiling(p.Bottom + gy - b.Y - Epsilon));
+                        }
                         if (push <= 0) break;
                         foreach (var id in row.Members) rowBoxes[id] = FormatAllSolver.Translate(rowBoxes[id], 0, push);
                     }
-                    foreach (var pair in rowBoxes) { next.Add(pair.Key, pair.Value); placed.Add(pair.Value); }
+                    foreach (var pair in rowBoxes) { next.Add(pair.Key, pair.Value); placed.Add(Footprint(pair.Key, pair.Value)); }
                 }
                 var nextTranslations = next.ToDictionary(p => p.Key, p => new Vec2(
-                    LayoutSolver.Round(p.Value.X - targets[p.Key].X), LayoutSolver.Round(p.Value.Y - targets[p.Key].Y)));
+                    LayoutSolver.Round(p.Value.X - originals[p.Key].X), LayoutSolver.Round(p.Value.Y - originals[p.Key].Y)));
                 changed = translations.Any(p => nextTranslations[p.Key].X != p.Value.X || nextTranslations[p.Key].Y != p.Value.Y);
                 translations = nextTranslations;
                 boxes = next;
                 if (!changed) break;
             }
             var notices = changed ? new[] { "Unstable: format-all tidy did not settle within five passes; kept the last result." } : Array.Empty<string>();
-            return new Result { Success = true, GroupBoxes = new SortedDictionary<Guid, Box>(boxes), Rounds = rounds,
+            return new Result { Success = true, GroupBoxes = new SortedDictionary<Guid, Box>(boxes.ToDictionary(p => p.Key, p => Footprint(p.Key, p.Value))), Rounds = rounds,
                 Unstable = changed, Log = notices, Notices = notices };
         }
 

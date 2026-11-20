@@ -40,6 +40,39 @@ internal static class FormatAllTests
     {
         int failures = 0;
         void Check(string name, Action test) { try { test(); Console.WriteLine("PASS " + name); } catch (Exception e) { failures++; Console.WriteLine("FAIL " + name + ": " + e.Message); } }
+        Check("Format all aligned raw row stays fixed with mixed tags in either Guid order", () => {
+            foreach (bool namedFirst in new[] { false, true })
+            foreach (double height in new[] { 10.0, 21.0, 31.0 }) {
+                FormatAllTarget Target(int id, int node, double x, bool named) {
+                    var g = new HierarchyGroup { Id = Id(id), TagSize = named ? new Vec2(60, height) : default,
+                        Nodes = new[] { TestNode(node, x, 0), TestNode(node + 1, x, 56) } };
+                    return new FormatAllTarget { Id = g.Id, Bounds = new Box(x, 0, 80, 96),
+                        Hierarchy = new HierarchySnapshot { Groups = new[] { g } } };
+                }
+                var s = new FormatAllSnapshot { Targets = new[] { Target(100, 1, 0, namedFirst), Target(101, 3, 130, !namedFirst) } };
+                var r = FormatAllSolver.Solve(s).Layout;
+                Assert(r.Success && !r.Unstable, r.Diagnostic);
+                Assert(r.Moves.Count == 0 && r.GroupBoxes.Values.All(b => b.Y == 0),
+                    "tag changed raw row tops: namedFirst=" + namedFirst + ", height=" + height);
+                StableAll(s, r, "mixed tag row");
+            }
+        });
+        Check("Format all raw column stays fixed with a tag wider than its box", () => {
+            foreach (bool namedFirst in new[] { false, true }) {
+                FormatAllTarget Target(int id, int node, double y, bool named) {
+                    var g = new HierarchyGroup { Id = Id(id), TagSize = named ? new Vec2(251, 31) : default,
+                        Nodes = new[] { TestNode(node, 0, y), TestNode(node + 1, 0, y + 56) } };
+                    return new FormatAllTarget { Id = g.Id, Bounds = new Box(0, y, 80, 96),
+                        Hierarchy = new HierarchySnapshot { Groups = new[] { g } } };
+                }
+                var s = new FormatAllSnapshot { Targets = new[] {
+                    Target(100, 1, 0, namedFirst), Target(101, 3, namedFirst ? 136 : 167, !namedFirst) } };
+                var r = FormatAllSolver.Solve(s).Layout;
+                Assert(r.Success && !r.Unstable && r.Moves.Count == 0, "wide tag shifted an aligned raw column");
+                Assert(r.GroupBoxes.Values.All(b => b.X == 0), "raw left edges lost");
+                StableAll(s, r, "wide tag column");
+            }
+        });
         Check("Format all tidy measures lower tag clearance and preserves raw boxes", () => {
             FormatAllTarget Target(int id, int first, double y, Vec2 tag) {
                 var g = new HierarchyGroup { Id = Id(id), TagSize = tag,
@@ -54,6 +87,43 @@ internal static class FormatAllTests
             Assert(r.GroupBoxes[lower.Id].Y - 31 - r.GroupBoxes[upper.Id].Bottom == s.Options.GroupGapY, "tidy ignored tag top");
             Assert(r.GroupBoxes[lower.Id].Width == 80 && r.GroupBoxes[lower.Id].Height == 96, "output is not raw box");
             WholeMoves(s, r, "odd tag tidy"); StableAll(s, r, "odd tag tidy");
+        });
+        Check("Format all same-row clearance includes wide tags on both neighbours", () => {
+            FormatAllTarget Target(int id, int node, double x, double tagWidth) {
+                var g = new HierarchyGroup { Id = Id(id), TagSize = new Vec2(tagWidth, 31),
+                    Nodes = new[] { TestNode(node, x, 0), TestNode(node + 1, x, 56) } };
+                return new FormatAllTarget { Id = g.Id, Bounds = new Box(x, 0, 80, 96),
+                    Hierarchy = new HierarchySnapshot { Groups = new[] { g } } };
+            }
+            var s = new FormatAllSnapshot { Targets = new[] { Target(100, 1, 0, 251), Target(101, 3, 90, 201) } };
+            var r = FormatAllSolver.Solve(s).Layout;
+            Assert(r.Success && !r.Unstable, r.Diagnostic);
+            var left = GroupFootprint.IncludeTag(r.GroupBoxes[Id(100)], new Vec2(251, 31));
+            var right = GroupFootprint.IncludeTag(r.GroupBoxes[Id(101)], new Vec2(201, 31));
+            Assert(right.X - left.Right == s.Options.GroupGapX, "wide tag margins lost in same-row push");
+            Assert(r.GroupBoxes[Id(100)].Y == r.GroupBoxes[Id(101)].Y, "wide tag changed raw row alignment");
+            WholeMoves(s, r, "two wide tags"); StableAll(s, r, "two wide tags");
+        });
+        Check("Tagged tidy retains clearance and whole fixed points across 300 fractional scenes", () => {
+            for (int seed = 0; seed < 300; seed++) {
+                var random = new Random(seed);
+                Box Make() => new Box(random.Next(800) + random.NextDouble(), random.Next(600) + random.NextDouble(),
+                    random.Next(40, 180) + random.NextDouble(), random.Next(40, 180) + random.NextDouble());
+                var raw = Enumerable.Range(1, random.Next(2, 10)).ToDictionary(Id, _ => Make());
+                var tags = raw.Keys.ToDictionary(id => id, _ => random.Next(3) == 0 ? default : new Vec2(random.Next(60, 500), random.Next(10, 60)));
+                var footprints = raw.ToDictionary(p => p.Key, p => GroupFootprint.IncludeTag(p.Value, tags[p.Key]));
+                var obstacles = Enumerable.Range(0, random.Next(4)).Select(_ => Make()).ToArray();
+                var r = GroupTidy.Solve(footprints, obstacles, new Options(), null, raw);
+                Assert(r.Success && !r.Unstable, "tagged tidy unstable at seed " + seed);
+                Clearance(r, obstacles, "tagged tidy " + seed);
+                foreach (var p in r.GroupBoxes) Assert(Whole(p.Value.X - footprints[p.Key].X) && Whole(p.Value.Y - footprints[p.Key].Y), "fractional tag translation");
+                var appliedRaw = raw.ToDictionary(p => p.Key, p => FormatAllSolver.Translate(p.Value,
+                    LayoutSolver.Round(r.GroupBoxes[p.Key].X - footprints[p.Key].X), LayoutSolver.Round(r.GroupBoxes[p.Key].Y - footprints[p.Key].Y)));
+                var again = GroupTidy.Solve(r.GroupBoxes, obstacles, new Options(), null, appliedRaw);
+                Assert(again.Success && !again.Unstable && r.GroupBoxes.All(p =>
+                    Math.Abs(p.Value.X - again.GroupBoxes[p.Key].X) < 1e-7 && Math.Abs(p.Value.Y - again.GroupBoxes[p.Key].Y) < 1e-7),
+                    "tagged tidy not fixed at seed " + seed);
+            }
         });
         Check("Format all fixed nested group tags obstruct tidy and rigid groups reserve tags", () => {
             var fixedRoot = new FormatAllTarget { Id = Id(100), Fixed = true, Bounds = new Box(0, 150, 80, 80),

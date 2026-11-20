@@ -209,8 +209,8 @@ namespace HopperFormat.Layout
         private static double Separation(Graph graph, OrderItem a, OrderItem b)
         {
             if (a.Virtual && b.Virtual) return graph.Options.StackGap;
-            if (a.Virtual || b.Virtual) return graph.Options.GapY;
-            return Gap(graph, a.Node, b.Node);
+            if (a.Virtual || b.Virtual) return graph.Options.GapY + a.Node.Reserve.Bottom + b.Node.Reserve.Top;
+            return Gap(graph, a.Node, b.Node) + a.Node.Reserve.Bottom + b.Node.Reserve.Top;
         }
 
         internal static double Gap(Graph graph, Node a, Node b)
@@ -235,8 +235,9 @@ namespace HopperFormat.Layout
         internal static double UnconnectedGap(Graph graph, Node node)
         {
             int index = Array.IndexOf(graph.Nodes, node);
-            return node.Kind == NodeKind.Group || index + 1 < graph.Nodes.Length && graph.Nodes[index + 1].Kind == NodeKind.Group
-                ? graph.Options.GroupGapY : graph.Options.GapY;
+            var next = index + 1 < graph.Nodes.Length ? graph.Nodes[index + 1] : null;
+            return (node.Kind == NodeKind.Group || next?.Kind == NodeKind.Group ? graph.Options.GroupGapY : graph.Options.GapY)
+                + node.Reserve.Bottom + (next?.Reserve.Top ?? 0);
         }
 
         internal static double IslandGap(Graph graph, IEnumerable<Node> a, IEnumerable<Node> b) =>

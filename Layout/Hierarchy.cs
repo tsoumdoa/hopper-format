@@ -4,13 +4,6 @@ using System.Linq;
 
 namespace HopperFormat.Layout
 {
-    public readonly struct Padding
-    {
-        public readonly double Left, Top, Right, Bottom;
-        public Padding(double left, double top, double right, double bottom)
-        { Left = left; Top = top; Right = right; Bottom = bottom; }
-    }
-
     public sealed class NonNodeMember
     {
         public Guid Id { get; set; }
@@ -303,7 +296,7 @@ namespace HopperFormat.Layout
                 var roots = snapshot.Groups.Where(g => members[g.Id].Count > 0).ToArray();
                 var covered = new HashSet<Guid>(snapshot.Groups.SelectMany(g => members[g.Id]));
                 var loose = snapshot.LooseNodes.Where(n => !covered.Contains(n.Id)).OrderBy(n => n.Id).ToArray();
-                var originalUnits = roots.Select(g => SeeThrough(g) ? ObjectBox(members[g.Id].Single(nodes.ContainsKey)) : Footprint(g, originalBoxes))
+                var originalUnits = roots.Select(g => SeeThrough(g) ? ObjectBox(members[g.Id].Single(nodes.ContainsKey)) : originalBoxes[g.Id])
                     .Concat(loose.Select(n => ObjectBox(n.Id))).ToArray();
                 foreach (var g in roots.OrderBy(g => g.Id)) SolveGroup(g);
                 var units = UniqueUnits(roots.Select(GroupUnit).Concat(loose.Select(NodeUnit)));
@@ -338,7 +331,7 @@ namespace HopperFormat.Layout
                 var children = RealChildren(g).ToArray();
                 // Measure before the children grow, excluding notes and see-through label boxes.
                 var oldUnits = direct.Where(nodes.ContainsKey).Select(ObjectBox)
-                    .Concat(children.Select(c => Footprint(c, originalBoxes))).ToArray();
+                    .Concat(children.Select(c => originalBoxes[c.Id])).ToArray();
                 foreach (var child in RealChildren(g).OrderBy(c => c.Id)) SolveGroup(child);
                 if (oldUnits.Length > 0)
                 {
@@ -352,7 +345,7 @@ namespace HopperFormat.Layout
                         snapshot.Groups.Count == 1 && snapshot.Groups[0].Id == g.Id &&
                         !snapshot.LooseNodes.Any(n => !members[g.Id].Contains(n.Id)));
                     var after = Envelope(direct.Where(nodes.ContainsKey).Select(ObjectBox)
-                        .Concat(children.Select(c => Footprint(c, boxes))));
+                        .Concat(children.Select(c => boxes[c.Id])));
                     double growthX = Math.Max(0, Math.Ceiling(after.Right - before.Right - 1e-7)),
                         growthY = Math.Max(0, Math.Ceiling(after.Bottom - before.Bottom - 1e-7));
                     foreach (var id in LayoutPhysicalIds(g).Where(nonNodes.ContainsKey).OrderBy(id => id))
@@ -397,13 +390,14 @@ namespace HopperFormat.Layout
                     labelUnit.Members = members[g.Id];
                     return labelUnit;
                 }
-                var b = Footprint(g, boxes);
+                var b = boxes[g.Id];
                 // Refer to a descendant pivot, making every outer translation integral.
                 var id = members[g.Id].Where(nodes.ContainsKey).OrderBy(k => k).FirstOrDefault();
                 var pivot = id != Guid.Empty ? new Vec2(tops[id].X + nodes[id].PivotOffset.X, tops[id].Y + nodes[id].PivotOffset.Y) :
                     new Vec2(LayoutSolver.Round(b.X), LayoutSolver.Round(b.Y));
                 var u = new Unit { Members = members[g.Id], Node = new Node { Id = g.Id, Label = g.Label, Kind = NodeKind.Group,
                     CurrentTop = new Vec2(b.X, b.Y), Width = b.Width, Height = b.Height,
+                    Reserve = GroupFootprint.Margins(b, Footprint(g, boxes)),
                     PivotOffset = new Vec2(pivot.X - b.X, pivot.Y - b.Y) } };
                 if (LabelGroup(g))
                 {
